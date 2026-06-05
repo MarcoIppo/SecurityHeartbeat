@@ -1,0 +1,56 @@
+"""Internationalization strings."""
+
+STRINGS = {
+    "en": {
+        "title": "Security Heartbeat US Generator",
+        "select_epic": "Select Epic:",
+        "epic_description": "Epic Description",
+        "historical_stories": "Historical Stories (check to include)",
+        "add_story": "+ Add Story",
+        "split_story": "⊕ Split",
+        "us_title": "Title:",
+        "us_description": "Description:",
+        "us_sprint": "Sprint:",
+        "confirm_create": "🚀 Create User Stories",
+        "cancel": "Cancel",
+        "history": "📋 History",
+        "no_epics": "No open epics found",
+        "loading": "Loading...",
+        "created_ok": "✓ Story created: {}",
+        "confirm_dialog": "Create {} user stories?",
+        "story_list_header": "Stories to create:",
+        "close": "Close",
+        "remove_tab": "✕ Remove",
+        "translate": "🌐 Translate to EN",
+        "save": "💾 Save",
+        "load_stories": "📥 Load Stories",
+    },
+    "it": {
+        "title": "Generatore US Security Heartbeat",
+        "select_epic": "Seleziona Epica:",
+        "epic_description": "Descrizione Epica",
+        "historical_stories": "Storie storiche (seleziona per includere)",
+        "add_story": "+ Aggiungi Storia",
+        "split_story": "⊕ Dividi",
+        "us_title": "Titolo:",
+        "us_description": "Descrizione:",
+        "us_sprint": "Sprint:",
+        "confirm_create": "🚀 Crea User Stories",
+        "cancel": "Annulla",
+        "history": "📋 Cronologia",
+        "no_epics": "Nessuna epica aperta trovata",
+        "loading": "Caricamento...",
+        "created_ok": "✓ Story creata: {}",
+        "confirm_dialog": "Creare {} user stories?",
+        "story_list_header": "Storie da creare:",
+        "close": "Chiudi",
+        "remove_tab": "✕ Rimuovi",
+        "translate": "🌐 Traduci in EN",
+        "save": "💾 Salva",
+        "load_stories": "📥 Carica Storie",
+    },
+}
+
+
+def get_strings(lang: str = "en") -> dict:
+    return STRINGS.get(lang, STRINGS["en"])

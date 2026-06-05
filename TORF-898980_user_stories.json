@@ -1,0 +1,108 @@
+{
+  "epic_key": "TORF-898980",
+  "epic_summary": "Rel. 26.3 Security heartbeat recurrent test activities for 26.3",
+  "project": "TORF",
+  "issuetype": "Story",
+  "stories": [
+    {
+      "title": "TLSv1.3 NBI vs ExtIdP (pENM as External Identity Provider) without TCP dumps 26.3",
+      "description": "Link : https://eteamspace.internal.ericsson.com/pages/viewpage.action?spaceKey=VUL&title=Functional+-+TLSv1.3+NBI+vs+ExtIdP+%28pENM+as+External+Identity+Provider%29+without+TCP+dumps\n\n*Acceptance Criteria:*\nRegarding   U.S.  \n # TORF-688711\n\n \n\nTest Report is completes",
+      "sprint": "Hydra 26.32",
+      "labels": [
+        "26.32",
+        "Hydra"
+      ]
+    },
+    {
+      "title": "Rel. 26.3 -  Test procedure for password changes Open DJ/Open IDM for pENM , environment setup: step 1/2",
+      "description": "Improve current tests for password changes Open DJ/Open IDM , environment setup,\r\n\r\nStep 1 of 2 : Environment setup of Deployment\r\n\r\nSee confluence page:\r\n\r\n[https://jira-oss.seli.wh.rnd.internal.ericsson.com/browse/TORF-601984]\r\n\r\nComplete steps list :\r\n * jenkins job installation/upgrade\r\n * netsim rollout \r\n * nodes setup\r\n * install licenses on ENM / install TLS\r\n * configure RFA250 jenkins job\r\n * 1st  RUN of RFA250 in CLEAN conditions to test enviroment (baseline)",
+      "sprint": "Hydra 26.32",
+      "labels": [
+        "26.32",
+        "Hydra"
+      ]
+    },
+    {
+      "title": "[Crypto] REST interface to create a new encryption key for pENM- Rel. ENM 26.3",
+      "description": "Create a user (Encryption24.3) on ENM by UserManagement application with role SECURITY_ADMIN.\r\n\r\nTo execute the steps :\r\n\r\n[https://taftm.seli.wh.rnd.internal.ericsson.com/#tm/viewTC/TORF-693238_Funct1_AC3_and_AC4/version/0.1]\r\n\r\n \r\n\r\nThis test to be executed the end sprint of the release,  after Improve current test for password changes Open DJ/Open IDM , sso password.",
+      "sprint": "Hydra 26.32",
+      "labels": [
+        "Hydra"
+      ]
+    },
+    {
+      "title": "Rel. 26.3 -  Test procedure for password changes Open DJ/Open IDM for cENM , environment setup: step 1/2",
+      "description": "Improve current tests for password changes Open DJ/Open IDM , environment setup,\r\n\r\nStep 1 of 2 : Environment setup of Deployment\r\n\r\nSee confluence page:\r\n\r\n[https://jira-oss.seli.wh.rnd.internal.ericsson.com/browse/TORF-601984]\r\n\r\nComplete steps list :\r\n * jenkins job installation/upgrade\r\n * netsim rollout \r\n * configure RFA250 jenkins job\r\n * 1st  RUN of RFA250 in CLEAN conditions to test enviroment (baseline)",
+      "sprint": "Hydra 26.32",
+      "labels": [
+        "26.32",
+        "Hydra"
+      ]
+    },
+    {
+      "title": "Rel. 26.3 -  Test procedure for password changes Open DJ/Open IDM for cENM, Change password : step 2/2",
+      "description": "Improve current test for password changes Open DJ/Open IDM , root password .\r\n\r\nTo test the change password for OpenDJ_root, OpenDJ_SSO and Openidm and the passkey regeneration on cENM it is needed to follow the document \r\n\r\nENM Identity and Access Management System Administrator Guide (2/1543-AOM 901 151-1). \r\n\r\n*Paragraphs to be followed are:* \r\n\r\nChange Root Passwords for OpenDJ on Cloud Native ENM - for OpenDJ_root\r\n * Rollback\r\n * 6.1.2, [Change Root Passwords for OpenDJ on Cloud Native ENM|https://cpistore.internal.ericsson.com/elex?LI=EN/LZN7030205*&FB=0&FN=2_1543-AOM901151-1Uen.*.html&HT=zpm1743413506742__note_N10033_N10027_N10024_N10001&DT=ENM+Identity+and+Access+Management+System+Administrator+Guide]\r\n * 6.2.2 [Change SSO Password for OpenDJ on Cloud Native ENM|https://cpistore.internal.ericsson.com/elex?LI=EN/LZN7030205*&FB=0&FN=2_1543-AOM901151-1Uen.*.html&HT=zpm1743413506742__context_st3_pc2_bhb&DT=ENM+Identity+and+Access+Management+System+Administrator+Guide]\r\n * 6.3.2  [Change Root Passwords for OpenIDM on Cloud Native ENM|https://cpistore.internal.ericsson.com/elex?LI=EN/LZN7030205*&FB=0&FN=2_1543-aom901151-1uen.*.html&HT=bwb1652434613308__context_st3_pc2_bhb&DT=ENM+Identity+and+Access+Management+System+Administrator+Guide]\r\n * 6.6     [Regenerate the Passkeys Used to Encrypt the Passwords in Cloud Native Deployment|https://cpistore.internal.ericsson.com/elex?LI=EN/LZN7030205*&FB=0&FN=2_1543-aom901151-1uen.*.html&HT=iyp1652439554866__context_st3_pc2_bhb&DT=ENM+Identity+and+Access+Management+System+Administrator+Guide]\r\n * Run RFA-250 test",
+      "sprint": "Hydra 26.32",
+      "labels": [
+        "26.32",
+        "Hydra"
+      ]
+    },
+    {
+      "title": "Rel. 26.3 -  Test procedure for password changes Open DJ/Open IDM for pENM , change password: step 2/2",
+      "description": "Improve current tests for password changes Open DJ/Open IDM , environment setup,\r\n\r\nStep 2 of 2 : Environment setup of Deployment\r\n\r\nSee confluence page:\r\n\r\n[https://jira-oss.seli.wh.rnd.internal.ericsson.com/browse/TORF-601984]\r\n\r\nComplete steps list :\r\n * Step 2 of  2 :\r\n * 6.1.1 Change Root Passwords for OpenDJ on Physical ENM Deployment\r\n * 6.2.1 Change SSO Password for OpenDJ on Physical ENM\r\n * 6.3.1 Change Root Passwords for OpenIDM on Physical ENM Deployment\r\n * 2nd  RUN of RFA250 in CLEAN conditions to test enviroment (baseline)",
+      "sprint": "Hydra 26.32",
+      "labels": [
+        "26.32",
+        "Hydra"
+      ]
+    },
+    {
+      "title": "Rel. 26.3 - vLITP - Time Bomb Test Report",
+      "description": "This US is intended to track the compilation of the test report relating to the Time Bomb tests.\n\n*Acceptance Criteria:*\nCollect Time Bomb Test Data\r\n\r\n \r\n\r\nVerify the reliability of the data and fill in the test report document.",
+      "sprint": "Hydra 26.32",
+      "labels": [
+        "Hydra",
+        "Security",
+        "TIMEBOMB"
+      ]
+    },
+    {
+      "title": "Rel. 26.3 - Time Bomb on vLITP:  Environment setup",
+      "description": "Prepare the server ieatenmc19b36 ready for Time bomb Test Execution.\r\n- Change the NTP in the future and align all the blades to the new date\r\n- Initial Install in the future time\r\n- basic health check\r\n- Set DDP Configuration\n\n*Acceptance Criteria:*\nOn vLITP ieatenmc19b36 execute the Environment setup\r\nstarting from II with NTP in future time\r\nto DDP configuration",
+      "sprint": "Hydra 26.32",
+      "labels": [
+        "Hydra",
+        "TIMEBOMB"
+      ]
+    },
+    {
+      "title": "Rel. 26.3 - vLITP Time Shift Test Execution.",
+      "description": "Execute the Time Shift Test on cENM as indicated in the following steps:\r\n\r\n \r\n * Step 7 - Certificate configuration\r\n * Step 8 - Change the NTP in the future and align all the blades to the new date\r\n * Step 10 - Check Security Certificates not managed by PKI\r\n * Step 11 - Check the NSS SW Version\r\n * Step 12 - Align Netsim Server date to the NTP\r\n * Step 13 - Update the NSS_CA as external CA in ENM\r\n * Step 14 - Apply future certs on Netsim VM nodes\r\n * Step 15 - Add Node Licenses on ENM server\r\n * Step 16 - Run RFA250 test\r\n * Step 17 - Workload Set Up\r\n * Step 18 - Run Node populator to add/synch nodes\r\n * Step 19 - Run PM Workload profiles\r\n * Step 20 - Check Workload profile results\r\n\r\nas reported in the following confluence page:\r\n[https://eteamspace.internal.ericsson.com/pages/viewpage.action?pageId=2902588433]\n\n*Acceptance Criteria:*\nThis US defines all the steps to perform vLITP Time Shift execution test in the future time (+ 10 years):\r\nstarting from certificate configuration to run of PM Workload Profiles.",
+      "sprint": "Hydra 26.29",
+      "labels": [
+        "Hydra",
+        "TimeShift"
+      ]
+    },
+    {
+      "title": "Rel. 26.3 - vLITP Time Shift Environment Setup.",
+      "description": "Execute the Time Shift Test on cENM as indicated in the following steps:\r\n * Step 1 - Set the Gateway as default custom NTP server\r\n * Step 2 - Set the system to the present\r\n * Step 2 bis - Prepare the SED\r\n * Step 3 - Initial Install the server\r\n * Step 4 -Basic Checks\r\n * Step 5 - Set DDP Configuration\r\n * Step 6 - Run RFA-250 Baseline\r\n\r\n \r\n\r\nas reported in the following confluence page:\r\n[https://eteamspace.internal.ericsson.com/pages/viewpage.action?pageId=2902588433]\n\n*Acceptance Criteria:*\nThis US defines all the steps to perform the setup of the vLITP environment starting from setting the Gateway as default custom NTP server up to running the security baseline Taf tests.",
+      "sprint": "Hydra 26.29",
+      "labels": [
+        "Hydra",
+        "TimeShift"
+      ]
+    },
+    {
+      "title": "Rel. 26.3 - vLITP - Time Shift Test Report",
+      "description": "This US is intended to track the compilation of the test report relating to the Time Shift tests.\n\n*Acceptance Criteria:*\nCollect Time Shift Test Data\r\n\r\n \r\n\r\nVerify the reliability of the data and fill in the test report document.",
+      "sprint": "Hydra 26.29",
+      "labels": [
+        "Hydra",
+        "Security",
+        "TimeShift"
+      ]
+    }
+  ]
+}
