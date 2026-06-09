@@ -1,0 +1,65 @@
+╔═══════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+║                     SECURITY HEARTBEAT US GENERATOR — FIELD COVERAGE MATRIX  v1.1.0                   ║
+╚═══════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+
+┌───────────────────────────┬───────────────────────┬────────┬─────────┬──────┬═══════════╤════════════════┐
+│ FIELD                     │ JIRA FIELD ID         │ READ   │ DISPLAY │ EDIT ║ ▶ SAVE ◀  │ ▶▶ CREATE ◀◀   │
+├───────────────────────────┼───────────────────────┼────────┼─────────┼──────╠═══════════╪════════════════╡
+│ Summary                   │ summary               │   ✅   │   ✅    │  ✅  ║    ✅     │      ✅        │
+│ Description               │ description           │   ✅   │   ✅    │  ✅  ║    ✅     │      ✅        │
+│ Acceptance Criteria       │ customfield_12818     │   ✅   │   ✅    │  ✅  ║    ✅     │      ✅        │
+│ Sprint                    │ customfield_11910     │   ✅   │   ✅    │  ✅  ║    ✅     │      ✅        │
+│ Labels                    │ labels                │   ✅   │   ✅    │  ✅  ║    ✅     │      ✅        │
+│ Assignee                  │ assignee              │   ✅   │   ✅    │  ✅  ║    ✅     │      ✅        │
+│ Components                │ components            │   ✅   │   ✅    │  ✅  ║    ✅     │      ✅        │
+│ Priority                  │ priority              │   ✅   │   ✅    │  ✅  ║    ✅     │      ✅        │
+│ Epic Link                 │ customfield_11911     │   ✅   │   ✅    │  —   ║    ✅     │      ✅        │
+├───────────────────────────┼───────────────────────┼────────┼─────────┼──────╠═══════════╪════════════════╡
+│ Status                    │ status                │   ✅   │   ✅    │  —   ║    —      │      —         │
+│ Resolution                │ resolution            │   ✅   │   ✅    │  —   ║    —      │      —         │
+│ Key (TORF-xxx)            │ key                   │   ✅   │   ✅    │  —   ║    —      │      —         │
+├───────────────────────────┼───────────────────────┼────────┼─────────┼──────╠═══════════╪════════════════╡
+│ Story Points              │ customfield_12011     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Team                      │ customfield_19813     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Release                   │ customfield_24770     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Security Level            │ customfield_12651     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Program                   │ customfield_24354     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Confidentiality           │ customfield_24418     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ TR Needed                 │ customfield_19063     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Planned Sprint            │ customfield_19223     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Planned Fixed Sprint      │ customfield_51048     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Baseline Sprint           │ customfield_51054     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Sprint Number             │ customfield_41412     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Sprint Label              │ customfield_22735     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Delivered in Sprint       │ customfield_49817     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Found in Sprint           │ customfield_49813     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Progress Tracking         │ customfield_50312     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Feature Maturity          │ customfield_50973     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Test Verdict              │ customfield_15527     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Scrum Master              │ customfield_51768     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ FPTB                      │ customfield_35116     │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Reporter                  │ reporter              │   ❌   │   ❌    │  ❌  ║    ❌     │      —         │
+│ Issue Links               │ issuelinks            │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Time Tracking             │ timetracking          │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Votes / Watchers          │ votes / watches       │   ❌   │   ❌    │  ❌  ║    ❌     │      ❌        │
+│ Created / Updated         │ created / updated     │   ❌   │   ❌    │  —   ║    —      │      —         │
+│ Dev Status                │ customfield_20210     │   ❌   │   ❌    │  —   ║    —      │      —         │
+│ Rank                      │ customfield_11918     │   ❌   │   ❌    │  —   ║    —      │      —         │
+└───────────────────────────┴───────────────────────┴────────┴─────────┴──────╚═══════════╧════════════════┘
+
+LEGEND:
+  ✅  = Fully handled
+  —   = Not applicable (auto-generated or workflow-managed)
+  ❌  = Not handled
+
+NOTES:
+  • Epic Link: set on CREATE; updated via re-link on existing stories (update_epic_link)
+  • Sprint: assigned via board API (add_issues_to_sprint) after issue creation
+  • Acceptance Criteria: written to dedicated custom field (not appended to description)
+
+COVERAGE SUMMARY:
+  ┌────────────────────────────────────────────────┐
+  │  SAVE   :  9 / 37 fields  ━━━━━━━━━░░░  24%   │
+  │  CREATE :  9 / 37 fields  ━━━━━━━━━░░░  24%   │
+  │  Total managed: 12 / 37 fields       (32%)    │
+  └────────────────────────────────────────────────┘

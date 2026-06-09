@@ -2,7 +2,7 @@
   "jira_url": "https://eteamproject-alpha.internal.ericsson.com",
   "project": "TORF",
   "issuetype": "Epic",
-  "summary_contains": "Security heartbeat recurrent test activities for",
+  "summary_contains": "Security,Heartbeat",
   "story_issuetype": "Story",
   "max_epics": 5,
   "team_name": "Hydra",

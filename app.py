@@ -2,6 +2,8 @@
 """Security Heartbeat User Story Generator - GUI Application (tkinter)."""
 import sys
 import os
+import logging
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
@@ -11,6 +13,31 @@ from config import load_state, save_state, load_history, VERSION, APP_TITLE, APP
 from config import JIRA_URL, JIRA_TOKEN, TEAM_NAME
 from i18n import get_strings
 from translator import translate_to_english
+
+# --- LOG setup (cleared on each launch) ---
+LOG_FILE = Path(__file__).parent / "securityHeartbeatGenerator.log"
+LOG_FILE.write_text("")  # clear on launch
+logging.basicConfig(
+    filename=str(LOG_FILE), level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
+)
+log = logging.getLogger("secheartbeat")
+
+# Log app configuration header
+from config import JIRA_PROJECT, BOARD_ID, MAX_EPICS, EPIC_NAME_PATTERN
+log.info("=" * 60)
+log.info(f"  {APP_TITLE} v{VERSION}")
+log.info(f"  Started: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+log.info(f"  User: {os.environ.get('USER', os.environ.get('USERNAME', 'unknown'))}")
+log.info(f"  Language: {'IT' if '--ita' in sys.argv else 'EN'}")
+log.info(f"  Jira URL: {JIRA_URL or '(not set)'}")
+log.info(f"  Jira Token: {'***' if JIRA_TOKEN else '(not set)'}")
+log.info(f"  Project: {JIRA_PROJECT}")
+log.info(f"  Team: {TEAM_NAME}")
+log.info(f"  Board ID: {BOARD_ID}")
+log.info(f"  Max Epics: {MAX_EPICS}")
+log.info(f"  Epic Pattern: {EPIC_NAME_PATTERN}")
+log.info("=" * 60)
 
 
 class ToolTip:
@@ -28,9 +55,21 @@ class ToolTip:
         self.tip = tk.Toplevel(self.widget)
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry(f"+{x}+{y}")
-        lbl = tk.Label(self.tip, text=self.text, font=("Segoe UI", 8),
-                       bg="#333333", fg="#ffffff", padx=6, pady=3, wraplength=300)
+        lbl = tk.Label(self.tip, text=self.text, font=("Consolas", 9),
+                       bg="#333333", fg="#ffffff", padx=8, pady=5,
+                       wraplength=350, justify="left")
         lbl.pack()
+        # Ensure tooltip stays within screen bounds
+        self.tip.update_idletasks()
+        sw = self.tip.winfo_screenwidth()
+        sh = self.tip.winfo_screenheight()
+        tw = self.tip.winfo_width()
+        th = self.tip.winfo_height()
+        if x + tw > sw:
+            x = sw - tw - 5
+        if y + th > sh:
+            y = self.widget.winfo_rooty() - th - 2
+        self.tip.wm_geometry(f"+{x}+{y}")
 
     def _hide(self, event=None):
         if self.tip:
@@ -114,14 +153,14 @@ def _init_jira(url, user, token):
             import importlib
             import jira_client
             importlib.reload(jira_client)
-            # Test connection with a simple request
             client = jira_client.get_client()
             client.myself()
             JIRA_AVAILABLE = True
+            log.info("Jira connection established")
             return True
         except Exception as e:
             err = str(e)[:200]
-            print(f"Jira init error: {err}")
+            log.error(f"Jira init error: {err}")
             JIRA_AVAILABLE = False
     else:
         JIRA_AVAILABLE = False
@@ -142,6 +181,10 @@ class SecurityHeartbeatApp:
         self.story_checkboxes = []  # (var, story_data)
         self.tab_widgets = []  # list of widget refs per tab
         self.sprints = []  # sprint names from board
+        self._epic_stories_cache = {}  # epic_key -> list of stories
+        self._add_to_epic_btn = None
+        self._blink_id = None  # after() id for blinking
+        self._popups = {}  # track open popups by type
 
         self._setup_style()
         self._load_logos()
@@ -154,6 +197,8 @@ class SecurityHeartbeatApp:
         self._load_sprints()
         self._load_epics()
         self._restore_state()
+
+        log.info("Application started")
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<Control-s>", lambda e: self._save())
@@ -351,7 +396,32 @@ class SecurityHeartbeatApp:
                                    insertbackground=FG_TEXT, bd=0, width=45, show="•",
                                    highlightbackground=BORDER_COLOR, highlightthickness=1)
         self.cred_token.pack(side="left", padx=(3, 10))
-        ToolTip(self.cred_token, "Jira Personal Access Token (Profile → Personal Access Tokens). No username needed.")
+        _pat_tooltip = (
+            "🔑 HOW TO CREATE THE TOKEN:\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "1️⃣  Open Jira in your browser\n"
+            "2️⃣  Click your profile icon (top-right)\n"
+            "3️⃣  Select 'Personal Access Tokens'\n"
+            "4️⃣  Click 'Create token'\n"
+            "5️⃣  Give it a name (e.g. 'Heartbeat App')\n"
+            "6️⃣  Copy the generated token\n"
+            "7️⃣  Paste it here\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚠ No username needed, only the token!"
+        ) if LANG == "en" else (
+            "🔑 COME CREARE IL TOKEN:\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "1️⃣  Apri Jira nel browser\n"
+            "2️⃣  Clicca la tua icona profilo (in alto a destra)\n"
+            "3️⃣  Seleziona 'Personal Access Tokens'\n"
+            "4️⃣  Clicca 'Create token'\n"
+            "5️⃣  Dai un nome (es. 'Heartbeat App')\n"
+            "6️⃣  Copia il token generato\n"
+            "7️⃣  Incollalo qui\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "⚠ Non serve username, solo il token!"
+        )
+        ToolTip(self.cred_token, _pat_tooltip)
 
         self.btn_connect = self._make_btn(cred_frame, "🔗 Connect", BTN_SUCCESS, self._connect_jira)
         self.btn_connect.pack(side="left", padx=5)
@@ -392,12 +462,19 @@ class SecurityHeartbeatApp:
         bar.pack(fill="x", side="bottom")
         bar.pack_propagate(False)
         mode = "JIRA" if JIRA_AVAILABLE else "DEMO"
+        # Blinking indicator
+        self.indicator_lbl = tk.Label(bar, text="●", font=("Segoe UI", 10),
+                                      fg="#888888", bg=BG_PANEL)
+        self.indicator_lbl.pack(side="left", padx=(5, 0))
+        self._indicator_tooltip = ToolTip(self.indicator_lbl, "Idle")
         self.status_lbl = tk.Label(bar, text=f"  Mode: {mode}  |  Ctrl+S: Save  |  Ctrl+Q: Quit",
                                     font=("Segoe UI", 8), fg="#888888", bg=BG_PANEL)
         self.status_lbl.pack(side="left", padx=5)
-        self.status_right = tk.Label(bar, text=f"v{VERSION}",
+        # Log file path on the right
+        self.status_right = tk.Label(bar, text=f"v{VERSION} | LOG: {LOG_FILE.name}",
                                       font=("Segoe UI", 8), fg="#888888", bg=BG_PANEL)
         self.status_right.pack(side="right", padx=5)
+        ToolTip(self.status_right, str(LOG_FILE))
 
     def _make_btn(self, parent, text, color, command, debounce_ms=400):
         def debounced():
@@ -413,6 +490,29 @@ class SecurityHeartbeatApp:
                         cursor="hand2", command=debounced)
         return btn
 
+    # --- Indicator ---
+
+    def _indicator_set(self, state: str):
+        """Set indicator: 'loading', 'ok', 'error'."""
+        if self._blink_id:
+            self.root.after_cancel(self._blink_id)
+            self._blink_id = None
+        if state == "loading":
+            self._indicator_tooltip.text = "Reading User Stories..."
+            self._blink_yellow()
+        elif state == "ok":
+            self.indicator_lbl.config(fg="#66bb6a")
+            self._indicator_tooltip.text = "User Stories updated"
+        elif state == "error":
+            self.indicator_lbl.config(fg="#ef5350")
+            self._indicator_tooltip.text = "Timeout reading User Stories"
+
+    def _blink_yellow(self):
+        cur = self.indicator_lbl.cget("fg")
+        nxt = "#ffca28" if cur != "#ffca28" else BG_PANEL
+        self.indicator_lbl.config(fg=nxt)
+        self._blink_id = self.root.after(500, self._blink_yellow)
+
     # --- Data Loading ---
 
     def _load_sprints(self):
@@ -421,19 +521,25 @@ class SecurityHeartbeatApp:
             try:
                 import jira_client
                 self.sprints = jira_client.get_board_sprints()
-            except Exception:
+                log.info(f"Loaded {len(self.sprints)} sprints")
+            except Exception as e:
+                log.error(f"Failed to load sprints: {e}")
                 self.sprints = []
         else:
             self.sprints = []
 
     def _load_epics(self):
         global JIRA_AVAILABLE
+        self._indicator_set("loading")
+        log.info("Loading epics...")
         if JIRA_AVAILABLE:
             try:
                 import jira_client
                 self.epics = jira_client.get_open_epics()
+                log.info(f"Loaded {len(self.epics)} epics")
             except Exception as e:
                 self._set_status(f"Jira error: {e}")
+                log.error(f"Failed to load epics: {e}")
                 self.epics = []
         else:
             self.epics = []
@@ -444,6 +550,22 @@ class SecurityHeartbeatApp:
             icon = "🔴" if resolved else "🟢"
             self.epic_combo.insert("end", f"{icon} [{e['key']}] {e['summary']}")
         self.epic_count_lbl.config(text=f"Epics: {len(self.epics)}")
+
+        # Preload stories count per epic to determine source epic
+        self._epic_stories_cache = {}
+        if JIRA_AVAILABLE and self.epics:
+            import jira_client
+            for e in self.epics:
+                try:
+                    stories = jira_client.get_epic_stories(e["key"])
+                    self._epic_stories_cache[e["key"]] = stories
+                    log.info(f"  Epic {e['key']}: {len(stories)} stories")
+                except Exception as ex:
+                    log.error(f"  Epic {e['key']}: failed to load stories: {ex}")
+                    self._epic_stories_cache[e["key"]] = []
+
+        self._indicator_set("ok")
+
         # Auto-select first epic
         if self.epics:
             self.epic_combo.selection_set(0)
@@ -472,39 +594,98 @@ class SecurityHeartbeatApp:
 
         self._load_stories_for_epic()
 
+    def _get_source_epic_index(self) -> int:
+        """Determine which epic to use as source for stories.
+
+        Returns the index of the latest epic that has linked stories,
+        falling back to the penultimate if the latest has none.
+        """
+        if not self.epics:
+            return -1
+        first_key = self.epics[0]["key"]
+        if self._epic_stories_cache.get(first_key):
+            return 0
+        # Latest has no stories, use the next one that does
+        for i in range(1, len(self.epics)):
+            if self._epic_stories_cache.get(self.epics[i]["key"]):
+                return i
+        return -1
+
+    def _is_story_editable(self, story: dict, is_new: bool) -> bool:
+        """A story is editable only if not yet created or if its status is Open."""
+        if is_new:
+            return True
+        status = story.get("status", "").lower()
+        return status in ("open", "backlog", "reopened", "")
+
     def _load_stories_for_epic(self):
-        """Load stories from selected epic and populate checkboxes + tabs."""
+        """Load stories for the selected epic with editability and old-epic logic."""
         if not self.selected_epic:
             return
-        stories = []
-        from_template = False
-        if JIRA_AVAILABLE:
+
+        # Clean up add-to-epic button
+        if self._add_to_epic_btn:
             try:
-                import jira_client
-                stories = jira_client.get_epic_stories(self.selected_epic["key"])
+                self._add_to_epic_btn.destroy()
             except Exception:
                 pass
-            if not stories:
-                from_template = True
-                try:
-                    import jira_client
-                    stories = jira_client.get_historical_stories()
-                except Exception:
-                    pass
+            self._add_to_epic_btn = None
+
+        self._indicator_set("loading")
+        log.info(f"Loading stories for epic {self.selected_epic['key']}")
+
+        # Determine the target epic (latest one, for creating new stories)
+        target_epic = self.epics[0] if self.epics else self.selected_epic
+        selected_key = self.selected_epic["key"]
+        selected_idx = next((i for i, e in enumerate(self.epics) if e["key"] == selected_key), 0)
+
+        # Source epic = latest that has stories (or latest if it has stories)
+        source_idx = self._get_source_epic_index()
+
+        stories = []
+        from_template = False
+        is_old_epic = False  # stories come from an older epic (not the target)
+
+        if JIRA_AVAILABLE:
+            # If selecting the target (latest) epic
+            if selected_idx == 0:
+                target_stories = self._epic_stories_cache.get(selected_key, [])
+                if target_stories:
+                    stories = target_stories
+                elif source_idx >= 0:
+                    # Latest has no stories, use source as template
+                    source_key = self.epics[source_idx]["key"]
+                    stories = self._epic_stories_cache.get(source_key, [])
+                    from_template = True
+                    is_old_epic = True
+                else:
+                    from_template = True
+                    try:
+                        import jira_client
+                        stories = jira_client.get_historical_stories()
+                    except Exception:
+                        pass
+            else:
+                # Selecting an older epic — show its stories
+                stories = self._epic_stories_cache.get(selected_key, [])
+                is_old_epic = True
         else:
             self._set_status("⚠ Jira not available — cannot load stories")
+
+        log.info(f"  Found {len(stories)} stories (template={from_template}, old_epic={is_old_epic})")
 
         # Update stories count
         self.stories_count_lbl.config(text=f"({len(stories)})")
 
-        # Populate checkboxes with click-to-select-tab behavior
+        # Populate checkboxes
         for w in self.stories_inner.winfo_children():
             w.destroy()
         self.story_checkboxes = []
 
         for i, s in enumerate(stories):
-            var = tk.BooleanVar(value=True)
-            cb = tk.Checkbutton(self.stories_inner, text=f"[{s['key']}] {s['summary']}",
+            # Stories from old epics are unchecked by default
+            var = tk.BooleanVar(value=not is_old_epic)
+            cb = tk.Checkbutton(self.stories_inner, text=f"[{s.get('key', 'NEW')}] {s['summary']}",
                                 variable=var, bg=BG_PANEL, fg=FG_TEXT,
                                 selectcolor=BG_CARD, activebackground=BG_PANEL,
                                 activeforeground=FG_ACCENT, font=("Segoe UI", 8),
@@ -514,10 +695,11 @@ class SecurityHeartbeatApp:
             self.story_checkboxes.append((var, s))
 
         # Create tabs from stories
-        is_resolved = self.selected_epic.get("resolution", "Unresolved").lower() != "unresolved"
+        is_resolved = target_epic.get("resolution", "Unresolved").lower() != "unresolved"
         self._clear_tabs()
         for s in stories:
-            if from_template:
+            if from_template or is_old_epic:
+                # Template from older epic — editable, not yet created
                 self._add_tab(s["summary"], s.get("description", ""),
                               key="", existing=False, readonly=False,
                               status="", resolution="", assignee="",
@@ -528,8 +710,11 @@ class SecurityHeartbeatApp:
                               components=s.get("components"),
                               priority=s.get("priority", ""))
             else:
+                # Existing stories — editable only if Open or not created
+                editable = self._is_story_editable(s, False)
+                readonly = is_resolved or not editable
                 self._add_tab(s["summary"], s.get("description", ""),
-                              key=s.get("key", ""), existing=True, readonly=is_resolved,
+                              key=s.get("key", ""), existing=True, readonly=readonly,
                               status=s.get("status", ""),
                               resolution=s.get("resolution", ""),
                               assignee=s.get("assignee", ""),
@@ -539,6 +724,12 @@ class SecurityHeartbeatApp:
                               assignee_key=s.get("assignee_key", ""),
                               components=s.get("components"),
                               priority=s.get("priority", ""))
+
+        # Show "Add to Epic" button if stories come from older epic
+        if is_old_epic:
+            self._show_add_to_epic_button(target_epic)
+
+        self._indicator_set("ok")
 
     def _select_tab_by_index(self, idx):
         """Select the notebook tab corresponding to the clicked story."""
@@ -550,6 +741,82 @@ class SecurityHeartbeatApp:
         """Reload stories from the selected epic."""
         self._load_stories_for_epic()
         self._set_status("Stories loaded from epic")
+
+    def _show_add_to_epic_button(self, target_epic):
+        """Show the 'Add to Epic' button when viewing stories from an older epic."""
+        # Remove previous add button if any
+        if hasattr(self, '_add_to_epic_btn') and self._add_to_epic_btn:
+            try:
+                self._add_to_epic_btn.destroy()
+            except Exception:
+                pass
+        btn_frame = self.stories_frame.master  # parent of stories_frame
+        self._add_to_epic_btn = self._make_btn(
+            btn_frame, f"➕ Add selected to {target_epic['key']}", BTN_SUCCESS,
+            lambda: self._add_stories_to_epic(target_epic))
+        self._add_to_epic_btn.pack(fill="x", padx=10, pady=(5, 0))
+        ToolTip(self._add_to_epic_btn,
+                f"Clone selected stories and link them to epic {target_epic['key']}")
+
+    def _add_stories_to_epic(self, target_epic):
+        """Clone selected stories from old epic and create them under the target epic."""
+        if not JIRA_AVAILABLE:
+            messagebox.showerror("Error", "Jira not available.")
+            return
+
+        selected = [(var, s) for var, s in self.story_checkboxes if var.get()]
+        if not selected:
+            messagebox.showwarning("No Selection", "Select at least one story to add.")
+            return
+
+        msg = f"Clone {len(selected)} stories to epic {target_epic['key']}?"
+        if not messagebox.askyesno("Confirm", msg):
+            return
+
+        log.info(f"Cloning {len(selected)} stories to {target_epic['key']}")
+        import jira_client
+        created = []
+        relinked = []
+        errors = []
+        for _, s in selected:
+            try:
+                if s.get("key") and s.get("epic_link") != target_epic["key"]:
+                    # Existing story from old epic — update its epic link
+                    jira_client.update_epic_link(s["key"], target_epic["key"])
+                    relinked.append(s["key"])
+                    log.info(f"  Re-linked {s['key']} to {target_epic['key']}")
+                else:
+                    # No key (template) — create new story
+                    desc = s.get("description", "")
+                    ac = s.get("acceptance_criteria", "")
+                    key = jira_client.create_story(
+                        target_epic["key"], s["summary"], desc,
+                        s.get("sprint", ""), s.get("labels"),
+                        s.get("assignee_key", ""), s.get("components"),
+                        s.get("priority", ""), ac)
+                    created.append(key)
+                    log.info(f"  Created {key}: {s['summary']}")
+            except Exception as e:
+                errors.append(f"{s.get('key', s['summary'])}: {e}")
+                log.error(f"  Failed: {s.get('key', s['summary'])}: {e}")
+
+        msg = ""
+        if created:
+            msg += f"✓ Created: {', '.join(created)}\n"
+        if relinked:
+            msg += f"✓ Re-linked: {', '.join(relinked)}\n"
+        if errors:
+            msg += f"\n✗ Errors:\n" + "\n".join(errors)
+        messagebox.showinfo("Results", msg)
+        self._set_status(f"Added {len(created)} created, {len(relinked)} re-linked to {target_epic['key']}")
+
+        # Refresh cache and reload
+        if created or relinked:
+            try:
+                self._epic_stories_cache[target_epic["key"]] = jira_client.get_epic_stories(target_epic["key"])
+            except Exception:
+                pass
+            self._load_stories_for_epic()
 
     # --- Tab Management ---
 
@@ -698,13 +965,16 @@ class SecurityHeartbeatApp:
         lbl_labels.pack(side="left")
         ToolTip(lbl_labels, "Comma-separated labels (e.g. 25.10,Hydra)")
         # Default labels: sprint number + team name
+        sprint_num = ""
+        sprint_val = sprint or ""
+        if sprint_val and TEAM_NAME and TEAM_NAME.lower() in sprint_val.lower():
+            sprint_num = sprint_val.replace(TEAM_NAME, "").strip()
         if labels is not None:
+            # Ensure sprint number is in labels
+            if sprint_num and sprint_num not in labels:
+                labels = list(labels) + [sprint_num]
             default_labels = ",".join(labels)
         else:
-            sprint_num = ""
-            sprint_val = sprint or (sprint_combo.get() if not sprint else "")
-            if sprint_val and TEAM_NAME and TEAM_NAME.lower() in sprint_val.lower():
-                sprint_num = sprint_val.replace(TEAM_NAME, "").strip()
             default_labels = ",".join(filter(None, [sprint_num, TEAM_NAME]))
         labels_entry = tk.Entry(labels_frame, font=("Segoe UI", 9), bg="#0a0a1a", fg=FG_TEXT,
                                 insertbackground=FG_TEXT, bd=0, width=30,
@@ -789,6 +1059,29 @@ class SecurityHeartbeatApp:
         # Select the new tab
         self.notebook.select(frame)
 
+    def _open_popup(self, popup_type: str, title: str, geometry: str) -> tk.Toplevel:
+        """Open a single popup per type, closing any previous one."""
+        if popup_type in self._popups:
+            try:
+                self._popups[popup_type].destroy()
+            except Exception:
+                pass
+        win = tk.Toplevel(self.root)
+        win.title(title)
+        win.geometry(geometry)
+        win.configure(bg=BG_DARK)
+        self._popups[popup_type] = win
+        win.protocol("WM_DELETE_WINDOW", lambda: self._close_popup(popup_type))
+        return win
+
+    def _close_popup(self, popup_type: str):
+        if popup_type in self._popups:
+            try:
+                self._popups[popup_type].destroy()
+            except Exception:
+                pass
+            del self._popups[popup_type]
+
     def _translate_popup(self, text_widget):
         """Open popup with translated text, Confirm replaces original, Skip closes."""
         original = text_widget.get("1.0", "end-1c")
@@ -803,10 +1096,7 @@ class SecurityHeartbeatApp:
             self._set_status("Translation unchanged — text may already be in English")
             return
 
-        win = tk.Toplevel(self.root)
-        win.title("Translation Preview")
-        win.geometry("600x350")
-        win.configure(bg=BG_DARK)
+        win = self._open_popup("translate", "Translation Preview", "600x350")
         win.resizable(True, True)
 
         tk.Label(win, text="[EN] English Translation:", font=("Segoe UI", 10, "bold"),
@@ -830,10 +1120,7 @@ class SecurityHeartbeatApp:
 
     def _show_markup_help(self):
         """Show Jira markup syntax in a popup window."""
-        win = tk.Toplevel(self.root)
-        win.title("Jira Markup Syntax")
-        win.geometry("440x520")
-        win.configure(bg=BG_DARK)
+        win = self._open_popup("markup_help", "Jira Markup Syntax", "440x520")
         win.resizable(False, False)
         text = tk.Text(win, font=("Consolas", 10), bg="#0a0a1a", fg=FG_TEXT,
                        bd=0, padx=10, pady=10)
@@ -895,10 +1182,8 @@ class SecurityHeartbeatApp:
             components = [c.strip() for c in comp_str.split(",") if c.strip()]
             priority = w["priority"].get().strip() if "priority" in w else ""
             if title:
-                full_desc = desc
-                if ac:
-                    full_desc += "\n\n*Acceptance Criteria:*\n" + ac
-                stories.append({"title": title, "description": full_desc,
+                stories.append({"title": title, "description": desc,
+                                "acceptance_criteria": ac,
                                 "sprint": sprint, "labels": labels,
                                 "assignee_key": assignee_key,
                                 "components": components, "priority": priority})
@@ -943,14 +1228,6 @@ class SecurityHeartbeatApp:
             messagebox.showwarning("No Stories", "No stories to create.")
             return
 
-        # Confirmation dialog
-        msg = S["confirm_dialog"].format(len(stories)) + "\n\n"
-        for i, s in enumerate(stories, 1):
-            msg += f"  {i}. {s['title']}\n"
-
-        if not messagebox.askyesno("Confirm", msg):
-            return
-
         if not self.selected_epic:
             messagebox.showerror("Error", "No epic selected!")
             return
@@ -960,19 +1237,109 @@ class SecurityHeartbeatApp:
                                  "Jira not configured.\nEnter credentials and click Connect, or set environment variables.")
             return
 
+        # Custom confirmation dialog
+        confirmed = [False]
+        win = self._open_popup("confirm_create", "Confirm Creation", "650x450")
+        win.resizable(False, True)
+        win.grab_set()
+
+        # Header
+        hdr = tk.Frame(win, bg=BG_PANEL)
+        hdr.pack(fill="x", padx=10, pady=(10, 5))
+        tk.Label(hdr, text=f"🚀 Create {len(stories)} User Stories?",
+                 font=("Segoe UI", 13, "bold"), fg=FG_TITLE, bg=BG_PANEL).pack(side="left")
+
+        # Epic info
+        tk.Label(win, text=f"Epic: [{self.selected_epic['key']}] {self.selected_epic.get('summary', '')}",
+                 font=("Segoe UI", 9), fg="#aaaaaa", bg=BG_DARK, wraplength=600, justify="left"
+                 ).pack(anchor="w", padx=10, pady=(0, 8))
+
+        # Stories list with columns
+        list_frame = tk.Frame(win, bg=BG_DARK)
+        list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+
+        # Header row
+        col_hdr = tk.Frame(list_frame, bg=ERICSSON_LIGHT if 'ERICSSON_LIGHT' in dir() else BTN_PRIMARY)
+        col_hdr.pack(fill="x")
+        tk.Label(col_hdr, text=" # ", font=("Segoe UI", 8, "bold"),
+                 fg="white", bg=BTN_PRIMARY, width=3).pack(side="left")
+        tk.Label(col_hdr, text=" Title", font=("Segoe UI", 8, "bold"),
+                 fg="white", bg=BTN_PRIMARY, anchor="w").pack(side="left", fill="x", expand=True)
+        tk.Label(col_hdr, text="Sprint ", font=("Segoe UI", 8, "bold"),
+                 fg="white", bg=BTN_PRIMARY, width=18).pack(side="right")
+        tk.Label(col_hdr, text="Assignee ", font=("Segoe UI", 8, "bold"),
+                 fg="white", bg=BTN_PRIMARY, width=10).pack(side="right")
+
+        # Scrollable list
+        canvas = tk.Canvas(list_frame, bg=BG_DARK, highlightthickness=0, height=250)
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
+        inner = tk.Frame(canvas, bg=BG_DARK)
+        inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=inner, anchor="nw", width=610)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+        for i, s in enumerate(stories, 1):
+            bg = "#0a1a2e" if i % 2 == 0 else "#0d2240"
+            row = tk.Frame(inner, bg=bg)
+            row.pack(fill="x")
+            tk.Label(row, text=f" {i:2d}", font=("Consolas", 9),
+                     fg=FG_ACCENT, bg=bg, width=3).pack(side="left")
+            tk.Label(row, text=f" {s['title'][:55]}{'…' if len(s['title'])>55 else ''}",
+                     font=("Segoe UI", 9), fg=FG_TEXT, bg=bg,
+                     anchor="w").pack(side="left", fill="x", expand=True)
+            sprint_txt = s.get("sprint", "—")[:18]
+            tk.Label(row, text=sprint_txt, font=("Segoe UI", 8),
+                     fg="#90caf9", bg=bg, width=18).pack(side="right")
+            assign_txt = s.get("assignee_key", "—")[:10]
+            tk.Label(row, text=assign_txt, font=("Segoe UI", 8),
+                     fg="#b0bec5", bg=bg, width=10).pack(side="right")
+
+        # Summary footer
+        footer = tk.Frame(win, bg=BG_PANEL)
+        footer.pack(fill="x", padx=10, pady=(5, 5))
+        tk.Label(footer, text=f"📊 Total: {len(stories)} stories  |  "
+                 f"Assignees: {len(set(s.get('assignee_key','') for s in stories if s.get('assignee_key')))}  |  "
+                 f"Sprints: {len(set(s.get('sprint','') for s in stories if s.get('sprint')))}",
+                 font=("Segoe UI", 9), fg="#aaaaaa", bg=BG_PANEL).pack(anchor="w")
+
+        # Buttons
+        btn_frame = tk.Frame(win, bg=BG_DARK)
+        btn_frame.pack(fill="x", padx=10, pady=(5, 10))
+
+        def do_confirm():
+            confirmed[0] = True
+            win.grab_release()
+            win.destroy()
+
+        def do_cancel():
+            win.grab_release()
+            win.destroy()
+
+        self._make_btn(btn_frame, "✓ Confirm & Create", BTN_SUCCESS, do_confirm).pack(side="left", padx=5)
+        self._make_btn(btn_frame, "✗ Cancel", BTN_DANGER, do_cancel).pack(side="left", padx=5)
+
+        win.wait_window()
+        if not confirmed[0]:
+            return
+
         epic_key = self.selected_epic["key"]
         created = []
         errors = []
+        log.info(f"Creating {len(stories)} stories for epic {epic_key}")
         import jira_client
         for s in stories:
             try:
                 key = jira_client.create_story(epic_key, s["title"], s["description"],
                                                s.get("sprint"), s.get("labels"),
                                                s.get("assignee_key"), s.get("components"),
-                                               s.get("priority"))
+                                               s.get("priority"), s.get("acceptance_criteria", ""))
                 created.append(key)
+                log.info(f"  Created {key}: {s['title']}")
             except Exception as e:
                 errors.append(f"{s['title']}: {e}")
+                log.error(f"  Failed: {s['title']}: {e}")
 
         msg = ""
         if created:
@@ -1014,16 +1381,21 @@ class SecurityHeartbeatApp:
 
     def _show_history(self):
         """Show application version history / changelog."""
-        win = tk.Toplevel(self.root)
-        win.title("Application History")
-        win.geometry("600x400")
-        win.configure(bg=BG_DARK)
+        win = self._open_popup("history", "Application History", "600x400")
 
         text = scrolledtext.ScrolledText(win, font=("Consolas", 9),
                                           bg="#0a0a1a", fg=FG_TEXT, bd=0)
         text.pack(fill="both", expand=True, padx=10, pady=10)
 
         changelog = (
+            "═══ v1.1.0 (2026-06-08) ═══\n"
+            "  • Stories editable only if Open or not yet created\n"
+            "  • Story list updates when selecting different epics\n"
+            "  • Old epic stories shown unchecked with 'Add to Epic' button\n"
+            "  • Blinking status indicator (yellow=reading, green=done, red=timeout)\n"
+            "  • Application log file (cleared on each launch)\n"
+            "  • Log file path displayed in status bar\n"
+            "\n"
             "═══ v1.0.0 (2026-06-05) ═══\n"
             "  • Initial release\n"
             "  • Load open/closed epics from Jira\n"
@@ -1052,6 +1424,7 @@ class SecurityHeartbeatApp:
 
     def _on_close(self):
         self._save()
+        log.info("Application closed")
         self.root.destroy()
 
     def run(self):

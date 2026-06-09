@@ -40,12 +40,26 @@ def _get_ac_field(client) -> str:
     return ""
 
 
+def _parse_summary_keywords(pattern: str) -> list[str]:
+    """Parse summary_contains into keyword list.
+
+    Supports comma-separated words and quoted phrases:
+      "Security,Heartbeat" -> ['Security', 'Heartbeat']
+      '"recurrent test",Security' -> ['recurrent test', 'Security']
+    """
+    import re
+    tokens = re.findall(r'"([^"]+)"|([^,]+)', pattern)
+    return [quoted or unquoted.strip() for quoted, unquoted in tokens if quoted or unquoted.strip()]
+
+
 def get_open_epics() -> list[dict]:
     """Get all heartbeat epics (open and closed) with status."""
     client = get_client()
+    keywords = _parse_summary_keywords(EPIC_NAME_PATTERN)
+    summary_clauses = " AND ".join(f'summary ~ "{kw}"' for kw in keywords)
     jql = (
-        f'project = {JIRA_PROJECT} AND issuetype = {EPIC_ISSUETYPE} '
-        f'AND summary ~ "{EPIC_NAME_PATTERN}" '
+        f'project = {JIRA_PROJECT} AND issuetype = Epic '
+        f'AND {summary_clauses} '
         f'ORDER BY created DESC'
     )
     issues = client.search_issues(jql, maxResults=MAX_EPICS, fields="summary,description,status,resolution")
@@ -62,6 +76,7 @@ def get_epic_stories(epic_key: str) -> list[dict]:
     """Get user stories linked to an epic, including acceptance criteria."""
     client = get_client()
     ac_field = _get_ac_field(client)
+    epic_link_field = _get_epic_link_field(client)
     jql = f'"Epic Link" = {epic_key} AND issuetype = {STORY_ISSUETYPE} ORDER BY key ASC'
     issues = client.search_issues(jql, maxResults=100)
     results = []
@@ -82,6 +97,8 @@ def get_epic_stories(epic_key: str) -> list[dict]:
         components = [c.name for c in (i.fields.components or [])]
         # Priority
         priority = i.fields.priority.name if i.fields.priority else ""
+        # Epic link
+        current_epic = getattr(i.fields, epic_link_field, "") or ""
         results.append({
             "key": str(i.key), "summary": i.fields.summary,
             "description": i.fields.description or "",
@@ -94,6 +111,7 @@ def get_epic_stories(epic_key: str) -> list[dict]:
             "assignee_key": assignee_key,
             "components": components,
             "priority": priority,
+            "epic_link": current_epic,
         })
     return results
 
@@ -139,7 +157,7 @@ def get_board_sprints() -> list[str]:
 def create_story(epic_key: str, summary: str, description: str,
                  sprint_name: str = "", labels: list = None,
                  assignee_key: str = "", components: list = None,
-                 priority: str = "") -> str:
+                 priority: str = "", acceptance_criteria: str = "") -> str:
     """Create a user story linked to the epic."""
     client = get_client()
     fields = {
@@ -148,6 +166,10 @@ def create_story(epic_key: str, summary: str, description: str,
         "summary": summary,
         "description": description,
     }
+    if acceptance_criteria:
+        ac_field = _get_ac_field(client)
+        if ac_field:
+            fields[ac_field] = acceptance_criteria
     if labels:
         fields["labels"] = labels
     if assignee_key:
@@ -172,7 +194,15 @@ def _get_epic_link_field(client) -> str:
     for field in client.fields():
         if field["name"] == "Epic Link":
             return field["id"]
-    return "customfield_10014"
+    return "customfield_11911"
+
+
+def update_epic_link(issue_key: str, epic_key: str):
+    """Update the Epic Link field on an existing story."""
+    client = get_client()
+    epic_field = _get_epic_link_field(client)
+    issue = client.issue(issue_key)
+    issue.update(fields={epic_field: epic_key})
 
 
 def _move_to_sprint(client, issue_key: str, sprint_name: str):

@@ -4,3 +4,4 @@ __pycache__/
 *.pyo
 .secheartbeat_state.json
 .secheartbeat_history.json
+securityHeartbeatGenerator.log
