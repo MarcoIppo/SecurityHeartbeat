@@ -1,6 +1,8 @@
 """Configuration and persistence module."""
 import json
 import os
+import base64
+import stat
 from pathlib import Path
 from datetime import datetime
 
@@ -18,6 +20,27 @@ def _load_app_config() -> dict:
     return {}
 
 
+def save_app_config(updates: dict):
+    """Merge updates into app_config.json and save atomically."""
+    import tempfile
+    cfg = _load_app_config()
+    cfg.update(updates)
+    content = json.dumps(cfg, indent=2, ensure_ascii=False)
+    # Write to temp file then atomic rename (POSIX guarantees)
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        dir=str(APP_CONFIG_FILE.parent), suffix=".tmp"
+    )
+    try:
+        os.write(tmp_fd, content.encode("utf-8"))
+        os.close(tmp_fd)
+        os.replace(tmp_path, str(APP_CONFIG_FILE))
+    except Exception:
+        os.close(tmp_fd) if not os.get_inheritable(tmp_fd) else None
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+        raise
+
+
 _APP_CFG = _load_app_config()
 
 JIRA_URL = _APP_CFG.get("jira_url", os.environ.get("JIRA_URL", ""))
@@ -31,28 +54,63 @@ MAX_EPICS = _APP_CFG.get("max_epics", 5)
 TEAM_NAME = _APP_CFG.get("team_name", "Hydra")
 BOARD_ID = _APP_CFG.get("board_id", 38770)
 
-VERSION = "1.1.0"
+VERSION = "1.3.5"
 APP_TITLE = "Security Heartbeat US Generator"
 APP_DESC = "Generate and manage Jira User Stories from Security Heartbeat epics"
+
+# Window geometry defaults
+DEFAULT_GEOMETRY = "1200x850"
+WINDOW_GEOMETRY = _APP_CFG.get("window_geometry", DEFAULT_GEOMETRY)
+POPUP_GEOMETRIES = _APP_CFG.get("popup_geometries", {})
+
+
+def _obfuscate_token(token: str) -> str:
+    """Encode token to base64 to prevent casual plain-text exposure."""
+    if not token:
+        return ""
+    return base64.b64encode(token.encode("utf-8")).decode("ascii")
+
+
+def _deobfuscate_token(encoded: str) -> str:
+    """Decode base64-obfuscated token."""
+    if not encoded:
+        return ""
+    try:
+        return base64.b64decode(encoded.encode("ascii")).decode("utf-8")
+    except Exception:
+        # Fallback: treat as plain text (backward compat with old state files)
+        return encoded
 
 
 def load_state() -> dict:
     if STATE_FILE.exists():
         try:
-            return json.loads(STATE_FILE.read_text())
+            data = json.loads(STATE_FILE.read_text())
+            # Deobfuscate token on read
+            if "jira_token_b64" in data:
+                data["jira_token"] = _deobfuscate_token(data.pop("jira_token_b64"))
+            return data
         except json.JSONDecodeError:
             return {}
     return {}
 
 
 def save_state(state: dict):
-    STATE_FILE.write_text(json.dumps(state, indent=2, default=str))
+    # Obfuscate token before writing
+    to_save = dict(state)
+    if "jira_token" in to_save:
+        to_save["jira_token_b64"] = _obfuscate_token(to_save.pop("jira_token"))
+    STATE_FILE.write_text(json.dumps(to_save, indent=2, default=str))
+    # Restrict file permissions to owner only (0600)
+    STATE_FILE.chmod(stat.S_IRUSR | stat.S_IWUSR)
     _add_history(state)
 
 
 def _add_history(state: dict):
     history = load_history()
-    history.append({"timestamp": datetime.now().isoformat(), "state": state})
+    # Remove token from history entries (security)
+    state_for_history = {k: v for k, v in state.items() if k != "jira_token"}
+    history.append({"timestamp": datetime.now().isoformat(), "state": state_for_history})
     # Keep last 100 entries
     if len(history) > 100:
         history = history[-100:]

@@ -3,16 +3,33 @@
 import sys
 import os
 import logging
-import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, scrolledtext
 from pathlib import Path
 from datetime import datetime
 
 from config import load_state, save_state, load_history, VERSION, APP_TITLE, APP_DESC
+from config import WINDOW_GEOMETRY, POPUP_GEOMETRIES, save_app_config
 from config import JIRA_URL, JIRA_TOKEN, TEAM_NAME
 from i18n import get_strings
 from translator import translate_to_english
+from help_texts import get_help
+
+# --- CLI help ---
+if "-h" in sys.argv or "--help" in sys.argv:
+    print(f"{APP_TITLE} v{VERSION}")
+    print(f"{APP_DESC}\n")
+    print("Usage: python app.py [OPTIONS]\n")
+    print("Options:")
+    print("  --ita        Launch with Italian UI (default: English)")
+    print("  -h, --help   Show this help message and exit")
+    print()
+    print("Environment variables:")
+    print("  JIRA_URL     Jira server URL")
+    print("  JIRA_TOKEN   Jira Personal Access Token (Bearer)")
+    print("  JIRA_USER    Jira username (optional, not used for auth)")
+    print("  JIRA_PROJECT Jira project key (default: from app_config.json)")
+    sys.exit(0)
 
 # --- LOG setup (cleared on each launch) ---
 LOG_FILE = Path(__file__).parent / "securityHeartbeatGenerator.log"
@@ -55,9 +72,10 @@ class ToolTip:
         self.tip = tk.Toplevel(self.widget)
         self.tip.wm_overrideredirect(True)
         self.tip.wm_geometry(f"+{x}+{y}")
-        lbl = tk.Label(self.tip, text=self.text, font=("Consolas", 9),
-                       bg="#333333", fg="#ffffff", padx=8, pady=5,
-                       wraplength=350, justify="left")
+        lbl = tk.Label(self.tip, text=self.text, font=("Segoe UI", 9),
+                       bg="#1e1e2e", fg="#e0e0e0", padx=12, pady=8,
+                       wraplength=480, justify="left",
+                       highlightbackground="#444466", highlightthickness=1)
         lbl.pack()
         # Ensure tooltip stays within screen bounds
         self.tip.update_idletasks()
@@ -78,6 +96,7 @@ class ToolTip:
 
 LANG = "it" if "--ita" in sys.argv else "en"
 S = get_strings(LANG)
+H = get_help(LANG)
 
 ASSETS_DIR = Path(__file__).parent / "assets"
 
@@ -94,6 +113,22 @@ BTN_SUCCESS = "#26a69a"   # Teal green
 BTN_DANGER = "#ef5350"    # Red
 BTN_INFO = "#5c6bc0"      # Indigo
 BORDER_COLOR = "#0082f0"  # Ericsson blue
+UNPLANNED_SPRINT = "— Unplanned —"
+
+# Monospace font — pick first available on the system
+def _pick_mono_font():
+    try:
+        import tkinter.font as tkfont
+        families = tkfont.families()
+        for candidate in ("Consolas", "DejaVu Sans Mono", "Liberation Mono",
+                          "Ubuntu Mono", "Courier New", "Courier"):
+            if candidate in families:
+                return candidate
+    except Exception:
+        pass
+    return "TkFixedFont"
+
+MONO_FONT = _pick_mono_font()
 
 JIRA_MARKUP_HELP = (
     "╔════════════════════════════════════════╗\n"
@@ -126,9 +161,12 @@ JIRA_MARKUP_HELP = (
     "\n"
     "┌─── Blocks ───────────────────────────┐\n"
     "│  {code}...{code}     code block      │\n"
+    "│  {code:java}...{code} with language  │\n"
     "│  {quote}...{quote}   quote block     │\n"
     "│  {noformat}...{noformat} preformat   │\n"
+    "│  {panel:title=T}...{panel} panel     │\n"
     "│  {color:red}text{color} colored      │\n"
+    "│  bq. text            blockquote      │\n"
     "└──────────────────────────────────────┘\n"
     "\n"
     "┌─── Tables ───────────────────────────┐\n"
@@ -150,10 +188,8 @@ def _init_jira(url, user, token):
             import config
             config.JIRA_URL = url
             config.JIRA_TOKEN = token
-            import importlib
-            import jira_client
-            importlib.reload(jira_client)
-            client = jira_client.get_client()
+            from jira import JIRA
+            client = JIRA(server=url, token_auth=token)
             client.myself()
             JIRA_AVAILABLE = True
             log.info("Jira connection established")
@@ -171,7 +207,7 @@ class SecurityHeartbeatApp:
     def __init__(self):
         self.root = tk.Tk()
         self.root.title(f"{APP_TITLE} v{VERSION}")
-        self.root.geometry("1200x850")
+        self.root.geometry(WINDOW_GEOMETRY)
         self.root.configure(bg=BG_DARK)
         self.root.minsize(1000, 700)
 
@@ -181,6 +217,7 @@ class SecurityHeartbeatApp:
         self.story_checkboxes = []  # (var, story_data)
         self.tab_widgets = []  # list of widget refs per tab
         self.sprints = []  # sprint names from board
+        self._sprint_id_map = {}  # sprint name -> sprint ID
         self._epic_stories_cache = {}  # epic_key -> list of stories
         self._add_to_epic_btn = None
         self._blink_id = None  # after() id for blinking
@@ -291,7 +328,7 @@ class SecurityHeartbeatApp:
         lbl_epic = tk.Label(parent, text=S["select_epic"], font=("Segoe UI", 11, "bold"),
                  fg=FG_ACCENT, bg=BG_PANEL)
         lbl_epic.pack(anchor="w", padx=10, pady=(10, 2))
-        ToolTip(lbl_epic, "Select a Security Heartbeat epic to load its stories")
+        ToolTip(lbl_epic, H["select_epic"])
 
         self.epic_var = tk.StringVar()
         self.epic_combo = tk.Listbox(parent, font=("Segoe UI", 9), height=4,
@@ -300,20 +337,28 @@ class SecurityHeartbeatApp:
                                       highlightbackground=BORDER_COLOR, exportselection=False)
         self.epic_combo.pack(fill="x", padx=10, pady=(0, 5))
         self.epic_combo.bind("<<ListboxSelect>>", self._on_epic_selected)
-        ToolTip(self.epic_combo, "🟢 = Open (can create stories), 🔴 = Resolved (read-only)")
+        ToolTip(self.epic_combo, H["epic_list"])
 
         # Epic count
         self.epic_count_lbl = tk.Label(parent, text="Epics: 0", font=("Segoe UI", 9),
                                         fg="#aaaaaa", bg=BG_PANEL)
         self.epic_count_lbl.pack(anchor="w", padx=10)
 
-        # Epic description
-        lbl_desc = tk.Label(parent, text=S["epic_description"], font=("Segoe UI", 10, "bold"),
+        # Epic description (read-only with visual cue)
+        desc_hdr = tk.Frame(parent, bg=BG_PANEL)
+        desc_hdr.pack(fill="x", padx=10, pady=(5, 2))
+        lbl_desc = tk.Label(desc_hdr, text=S["epic_description"], font=("Segoe UI", 10, "bold"),
                  fg=FG_TEXT, bg=BG_PANEL)
-        lbl_desc.pack(anchor="w", padx=10, pady=(5, 2))
-        ToolTip(lbl_desc, "Full description of the selected epic from Jira")
-        self.epic_desc = scrolledtext.ScrolledText(parent, height=5, font=("Consolas", 9),
-                                                    bg="#0a0a1a", fg=FG_TEXT, insertbackground=FG_TEXT,
+        lbl_desc.pack(side="left")
+        ToolTip(lbl_desc, H["epic_desc"])
+        btn_desc_help = tk.Button(desc_hdr, text="?", font=("Segoe UI", 7, "bold"),
+                                  bg=BTN_INFO, fg="white", bd=0, padx=4, pady=0,
+                                  cursor="hand2",
+                                  command=self._show_epic_readonly_help)
+        btn_desc_help.pack(side="left", padx=5)
+        ToolTip(btn_desc_help, H["epic_desc_help"])
+        self.epic_desc = scrolledtext.ScrolledText(parent, height=5, font=(MONO_FONT, 9),
+                                                    bg="#2a2a2a", fg="#aaaaaa", insertbackground=FG_TEXT,
                                                     bd=0, wrap="word")
         self.epic_desc.pack(fill="x", padx=10, pady=(0, 10))
 
@@ -355,8 +400,12 @@ class SecurityHeartbeatApp:
         # Buttons row
         btn_frame = tk.Frame(parent, bg=BG_PANEL)
         btn_frame.pack(fill="x", padx=10, pady=5)
-        self._make_btn(btn_frame, S["add_story"], BTN_SUCCESS, self._add_story).pack(side="left")
-        self._make_btn(btn_frame, S["load_stories"], BTN_INFO, self._load_from_epic).pack(side="left", padx=5)
+        btn_add = self._make_btn(btn_frame, S["add_story"], BTN_SUCCESS, self._add_story)
+        btn_add.pack(side="left")
+        ToolTip(btn_add, H["add_story"])
+        btn_load = self._make_btn(btn_frame, S["load_stories"], BTN_INFO, self._load_from_epic)
+        btn_load.pack(side="left", padx=5)
+        ToolTip(btn_load, H["load_stories"])
 
     def _build_right_panel(self, parent):
         # Tab area header
@@ -372,11 +421,21 @@ class SecurityHeartbeatApp:
         # Bottom action bar
         actions = tk.Frame(parent, bg=BG_DARK)
         actions.pack(fill="x", pady=(5, 0))
+        btn_sched = self._make_btn(actions, "📅 Scheduling", BTN_INFO, self._show_scheduling)
+        btn_sched.pack(side="left")
+        ToolTip(btn_sched, H["scheduling"])
         self.btn_create = self._make_btn(actions, S["confirm_create"], BTN_PRIMARY, self._create_stories)
-        self.btn_create.pack(side="left")
-        self._make_btn(actions, "💾 Save US", BTN_SUCCESS, self._save_stories_to_file).pack(side="left", padx=5)
-        self._make_btn(actions, "⏻ Quit", BTN_DANGER, self._on_close).pack(side="right")
-        self._make_btn(actions, S["history"], BTN_INFO, self._show_history).pack(side="right", padx=5)
+        self.btn_create.pack(side="left", padx=(5, 0))
+        ToolTip(self.btn_create, H["create_update"])
+        btn_save = self._make_btn(actions, "💾 Save US", BTN_SUCCESS, self._save_stories_to_file)
+        btn_save.pack(side="left", padx=5)
+        ToolTip(btn_save, H["save_us"])
+        btn_quit = self._make_btn(actions, "⏻ Quit", BTN_DANGER, self._on_close)
+        btn_quit.pack(side="right")
+        ToolTip(btn_quit, H["quit"])
+        btn_hist = self._make_btn(actions, S["history"], BTN_INFO, self._show_history)
+        btn_hist.pack(side="right", padx=5)
+        ToolTip(btn_hist, H["history"])
 
     def _build_credentials_panel(self):
         """Build credentials input panel at the bottom."""
@@ -388,7 +447,7 @@ class SecurityHeartbeatApp:
         lbl = tk.Label(cred_frame, text="🔐 Jira:", font=("Segoe UI", 9, "bold"),
                        fg=FG_ACCENT, bg=BG_PANEL)
         lbl.pack(side="left", padx=(10, 5))
-        ToolTip(lbl, "Jira connection (saved between sessions)")
+        ToolTip(lbl, H["jira_cred"])
 
         tk.Label(cred_frame, text="API Token:", font=("Segoe UI", 9),
                  fg=FG_TEXT, bg=BG_PANEL).pack(side="left")
@@ -425,7 +484,7 @@ class SecurityHeartbeatApp:
 
         self.btn_connect = self._make_btn(cred_frame, "🔗 Connect", BTN_SUCCESS, self._connect_jira)
         self.btn_connect.pack(side="left", padx=5)
-        ToolTip(self.btn_connect, "Test connection and reload epics from Jira")
+        ToolTip(self.btn_connect, H["connect"])
 
         # Pre-fill from state
         state = load_state()
@@ -438,7 +497,10 @@ class SecurityHeartbeatApp:
         """Try to initialize Jira from saved token or env var."""
         state = load_state()
         token = state.get("jira_token", "") or JIRA_TOKEN
-        _init_jira(JIRA_URL, "", token)
+        if _init_jira(JIRA_URL, "", token):
+            self._indicator_set("connected")
+        else:
+            self._indicator_set("disconnected")
 
     def _connect_jira(self):
         """Connect to Jira with token from GUI field."""
@@ -451,10 +513,12 @@ class SecurityHeartbeatApp:
             self._set_status("⚠ jira_url not set in app_config.json")
             return
         if _init_jira(JIRA_URL, "", token):
+            self._indicator_set("connected")
             self._load_sprints()
             self._load_epics()
             self._set_status(f"✓ Connected to Jira — {len(self.epics)} epics loaded")
         else:
+            self._indicator_set("disconnected")
             self._set_status("✗ Connection failed — check token or jira_url")
 
     def _build_status_bar(self):
@@ -462,14 +526,15 @@ class SecurityHeartbeatApp:
         bar.pack(fill="x", side="bottom")
         bar.pack_propagate(False)
         mode = "JIRA" if JIRA_AVAILABLE else "DEMO"
-        # Blinking indicator
-        self.indicator_lbl = tk.Label(bar, text="●", font=("Segoe UI", 10),
+        # Connection/loading indicator: ○ = not connected, ● = authenticated
+        self.indicator_lbl = tk.Label(bar, text="○", font=("Segoe UI", 10),
                                       fg="#888888", bg=BG_PANEL)
         self.indicator_lbl.pack(side="left", padx=(5, 0))
-        self._indicator_tooltip = ToolTip(self.indicator_lbl, "Idle")
+        self._indicator_tooltip = ToolTip(self.indicator_lbl, H["indicator"])
         self.status_lbl = tk.Label(bar, text=f"  Mode: {mode}  |  Ctrl+S: Save  |  Ctrl+Q: Quit",
                                     font=("Segoe UI", 8), fg="#888888", bg=BG_PANEL)
         self.status_lbl.pack(side="left", padx=5)
+        ToolTip(self.status_lbl, H["status_bar"])
         # Log file path on the right
         self.status_right = tk.Label(bar, text=f"v{VERSION} | LOG: {LOG_FILE.name}",
                                       font=("Segoe UI", 8), fg="#888888", bg=BG_PANEL)
@@ -493,19 +558,37 @@ class SecurityHeartbeatApp:
     # --- Indicator ---
 
     def _indicator_set(self, state: str):
-        """Set indicator: 'loading', 'ok', 'error'."""
+        """Set indicator: 'loading', 'ok', 'error'.
+
+        Shape reflects Jira connection:
+          ● (filled) = authenticated
+          ○ (outline) = not connected
+        Color reflects data-loading state:
+          green = stories loaded ok
+          yellow blink = loading in progress
+          red = timeout/error
+          gray = idle
+        """
         if self._blink_id:
             self.root.after_cancel(self._blink_id)
             self._blink_id = None
+        symbol = "●" if JIRA_AVAILABLE else "○"
         if state == "loading":
             self._indicator_tooltip.text = "Reading User Stories..."
+            self.indicator_lbl.config(text=symbol)
             self._blink_yellow()
         elif state == "ok":
-            self.indicator_lbl.config(fg="#66bb6a")
+            self.indicator_lbl.config(text=symbol, fg="#66bb6a")
             self._indicator_tooltip.text = "User Stories updated"
         elif state == "error":
-            self.indicator_lbl.config(fg="#ef5350")
+            self.indicator_lbl.config(text=symbol, fg="#ef5350")
             self._indicator_tooltip.text = "Timeout reading User Stories"
+        elif state == "connected":
+            self.indicator_lbl.config(text="●", fg="#66bb6a")
+            self._indicator_tooltip.text = "Connected to Jira"
+        elif state == "disconnected":
+            self.indicator_lbl.config(text="○", fg="#888888")
+            self._indicator_tooltip.text = "Not connected to Jira — showing cached data"
 
     def _blink_yellow(self):
         cur = self.indicator_lbl.cget("fg")
@@ -513,20 +596,32 @@ class SecurityHeartbeatApp:
         self.indicator_lbl.config(fg=nxt)
         self._blink_id = self.root.after(500, self._blink_yellow)
 
+    def _open_sprint_url(self, sprint_name: str):
+        """Open the Jira backlog planning page for the team board."""
+        from config import JIRA_URL, BOARD_ID
+        url = f"{JIRA_URL}/secure/RapidBoard.jspa?rapidView={BOARD_ID}&view=planning.nodetail&issueLimit=100"
+        import webbrowser
+        webbrowser.open(url)
+
     # --- Data Loading ---
 
     def _load_sprints(self):
-        """Load sprint names from the configured board."""
+        """Load sprint names and ID mapping from the configured board."""
         if JIRA_AVAILABLE:
             try:
                 import jira_client
                 self.sprints = jira_client.get_board_sprints()
+                # Build name→ID mapping for sprint links
+                details = jira_client.get_board_sprints_details()
+                self._sprint_id_map = {d["name"]: d["id"] for d in details}
                 log.info(f"Loaded {len(self.sprints)} sprints")
             except Exception as e:
                 log.error(f"Failed to load sprints: {e}")
                 self.sprints = []
+                self._sprint_id_map = {}
         else:
             self.sprints = []
+            self._sprint_id_map = {}
 
     def _load_epics(self):
         global JIRA_AVAILABLE
@@ -698,17 +793,32 @@ class SecurityHeartbeatApp:
         is_resolved = target_epic.get("resolution", "Unresolved").lower() != "unresolved"
         self._clear_tabs()
         for s in stories:
-            if from_template or is_old_epic:
-                # Template from older epic — editable, not yet created
+            if from_template:
+                # Template from older epic — new stories, sprint must be unplanned
                 self._add_tab(s["summary"], s.get("description", ""),
                               key="", existing=False, readonly=False,
                               status="", resolution="", assignee="",
+                              acceptance_criteria=s.get("acceptance_criteria", ""),
+                              sprint="",
+                              labels=s.get("labels"),
+                              assignee_key=s.get("assignee_key", ""),
+                              components=s.get("components"),
+                              priority=s.get("priority", ""),
+                              story_points=s.get("story_points", ""))
+            elif is_old_epic:
+                # Viewing an older epic — existing stories, readonly
+                self._add_tab(s["summary"], s.get("description", ""),
+                              key=s.get("key", ""), existing=True, readonly=True,
+                              status=s.get("status", ""),
+                              resolution=s.get("resolution", ""),
+                              assignee=s.get("assignee", ""),
                               acceptance_criteria=s.get("acceptance_criteria", ""),
                               sprint=s.get("sprint", ""),
                               labels=s.get("labels"),
                               assignee_key=s.get("assignee_key", ""),
                               components=s.get("components"),
-                              priority=s.get("priority", ""))
+                              priority=s.get("priority", ""),
+                              story_points=s.get("story_points", ""))
             else:
                 # Existing stories — editable only if Open or not created
                 editable = self._is_story_editable(s, False)
@@ -723,7 +833,8 @@ class SecurityHeartbeatApp:
                               labels=s.get("labels"),
                               assignee_key=s.get("assignee_key", ""),
                               components=s.get("components"),
-                              priority=s.get("priority", ""))
+                              priority=s.get("priority", ""),
+                              story_points=s.get("story_points", ""))
 
         # Show "Add to Epic" button if stories come from older epic
         if is_old_epic:
@@ -755,8 +866,7 @@ class SecurityHeartbeatApp:
             btn_frame, f"➕ Add selected to {target_epic['key']}", BTN_SUCCESS,
             lambda: self._add_stories_to_epic(target_epic))
         self._add_to_epic_btn.pack(fill="x", padx=10, pady=(5, 0))
-        ToolTip(self._add_to_epic_btn,
-                f"Clone selected stories and link them to epic {target_epic['key']}")
+        ToolTip(self._add_to_epic_btn, H["add_to_epic"])
 
     def _add_stories_to_epic(self, target_epic):
         """Clone selected stories from old epic and create them under the target epic."""
@@ -834,7 +944,8 @@ class SecurityHeartbeatApp:
                  readonly: bool = False, status: str = "", resolution: str = "",
                  assignee: str = "", acceptance_criteria: str = "",
                  labels: list = None, assignee_key: str = "",
-                 components: list = None, priority: str = ""):
+                 components: list = None, priority: str = "",
+                 story_points: str = ""):
         frame = tk.Frame(self.notebook, bg=BG_CARD)
 
         # Header row: key + status + resolution + assignee
@@ -877,7 +988,7 @@ class SecurityHeartbeatApp:
         lbl_title = tk.Label(frame, text=S["us_title"], font=("Segoe UI", 10, "bold"),
                  fg=FG_ACCENT, bg=BG_CARD)
         lbl_title.pack(anchor="w", padx=10, pady=(5, 2))
-        ToolTip(lbl_title, "User story summary/title as it will appear in Jira")
+        ToolTip(lbl_title, H["us_title"])
         state = "disabled" if readonly else "normal"
         title_entry = tk.Entry(frame, font=("Segoe UI", 10), bg="#0a0a1a", fg=FG_TEXT,
                                insertbackground=FG_TEXT, bd=0, highlightbackground=BORDER_COLOR,
@@ -892,25 +1003,32 @@ class SecurityHeartbeatApp:
         lbl_desc_tab = tk.Label(desc_hdr, text=S["us_description"], font=("Segoe UI", 10, "bold"),
                  fg=FG_ACCENT, bg=BG_CARD)
         lbl_desc_tab.pack(side="left")
-        ToolTip(lbl_desc_tab, "Detailed description of the user story (Jira wiki markup)")
+        ToolTip(lbl_desc_tab, H["us_desc"])
         btn_help = tk.Button(desc_hdr, text="?", font=("Segoe UI", 7, "bold"),
                              bg=BTN_INFO, fg="white", bd=0, padx=4, pady=0,
                              cursor="hand2", command=self._show_markup_help)
         btn_help.pack(side="left", padx=5)
-        ToolTip(btn_help, "Show Jira text formatting syntax")
-        desc_text = scrolledtext.ScrolledText(frame, height=8, font=("Consolas", 9),
+        ToolTip(btn_help, H["markup_help"])
+        desc_text = scrolledtext.ScrolledText(frame, height=8, font=(MONO_FONT, 9),
                                               bg="#0a0a1a", fg=FG_TEXT, insertbackground=FG_TEXT,
                                               bd=0, wrap="word", highlightbackground=BORDER_COLOR,
                                               highlightthickness=1)
         desc_text.pack(fill="both", expand=True, padx=10, pady=(0, 5))
-        desc_text.insert("1.0", description)
+        desc_text.insert("1.0", description.replace("\r", ""))
+        # Preview button (always visible)
+        btn_preview_desc = tk.Button(desc_hdr, text="👁", font=("Segoe UI", 9),
+                                     bg="#5c6bc0", fg="white", bd=0, padx=4, pady=0,
+                                     cursor="hand2",
+                                     command=lambda: self._preview_markup(desc_text))
+        btn_preview_desc.pack(side="left", padx=3)
+        ToolTip(btn_preview_desc, H.get("preview_markup", "Preview rendered markup"))
         if not readonly:
             btn_tr_desc = tk.Button(desc_hdr, text="IT→EN", font=("Segoe UI", 8, "bold"),
                                     bg="#f39c12", fg="white", bd=0, padx=4, pady=0,
                                     cursor="hand2",
                                     command=lambda: self._translate_popup(desc_text))
             btn_tr_desc.pack(side="left", padx=3)
-            ToolTip(btn_tr_desc, "Translate Italian text to English")
+            ToolTip(btn_tr_desc, H["translate"])
         if readonly:
             desc_text.config(state="disabled")
 
@@ -920,25 +1038,32 @@ class SecurityHeartbeatApp:
         lbl_ac = tk.Label(ac_hdr, text="Acceptance Criteria:", font=("Segoe UI", 10, "bold"),
                  fg=FG_ACCENT, bg=BG_CARD)
         lbl_ac.pack(side="left")
-        ToolTip(lbl_ac, "Conditions that must be met for the story to be considered done")
+        ToolTip(lbl_ac, H["us_ac"])
         btn_help_ac = tk.Button(ac_hdr, text="?", font=("Segoe UI", 7, "bold"),
                                 bg=BTN_INFO, fg="white", bd=0, padx=4, pady=0,
                                 cursor="hand2", command=self._show_markup_help)
         btn_help_ac.pack(side="left", padx=5)
-        ToolTip(btn_help_ac, "Show Jira text formatting syntax")
-        ac_text = scrolledtext.ScrolledText(frame, height=4, font=("Consolas", 9),
+        ToolTip(btn_help_ac, H["markup_help"])
+        ac_text = scrolledtext.ScrolledText(frame, height=4, font=(MONO_FONT, 9),
                                             bg="#0a0a1a", fg=FG_TEXT, insertbackground=FG_TEXT,
                                             bd=0, wrap="word", highlightbackground=BORDER_COLOR,
                                             highlightthickness=1)
         ac_text.pack(fill="x", padx=10, pady=(0, 5))
+        # Preview button for AC (always visible)
+        btn_preview_ac = tk.Button(ac_hdr, text="👁", font=("Segoe UI", 9),
+                                   bg="#5c6bc0", fg="white", bd=0, padx=4, pady=0,
+                                   cursor="hand2",
+                                   command=lambda: self._preview_markup(ac_text))
+        btn_preview_ac.pack(side="left", padx=3)
+        ToolTip(btn_preview_ac, H.get("preview_markup", "Preview rendered markup"))
         if not readonly:
             btn_tr_ac = tk.Button(ac_hdr, text="IT→EN", font=("Segoe UI", 8, "bold"),
                                   bg="#f39c12", fg="white", bd=0, padx=4, pady=0,
                                   cursor="hand2",
                                   command=lambda: self._translate_popup(ac_text))
             btn_tr_ac.pack(side="left", padx=3)
-            ToolTip(btn_tr_ac, "Translate Italian text to English")
-        ac_text.insert("1.0", acceptance_criteria)
+            ToolTip(btn_tr_ac, H["translate"])
+        ac_text.insert("1.0", acceptance_criteria.replace("\r", ""))
         if readonly:
             ac_text.config(state="disabled")
 
@@ -948,14 +1073,38 @@ class SecurityHeartbeatApp:
         lbl_sprint = tk.Label(sprint_frame, text=S["us_sprint"], font=("Segoe UI", 9, "bold"),
                  fg=FG_TEXT, bg=BG_CARD)
         lbl_sprint.pack(side="left")
-        ToolTip(lbl_sprint, "Sprint to assign the story to (from team board)")
+        ToolTip(lbl_sprint, H["us_sprint"])
+        if not existing:
+            sprint_values = [UNPLANNED_SPRINT] + self.sprints
+        else:
+            sprint_values = self.sprints
         sprint_combo = ttk.Combobox(sprint_frame, font=("Segoe UI", 9), width=30,
-                                    values=self.sprints, state="readonly" if readonly else "normal")
+                                    values=sprint_values, state="readonly" if readonly else "normal")
         sprint_combo.pack(side="left", padx=(5, 0))
         if sprint:
             sprint_combo.set(sprint)
+        elif not existing:
+            sprint_combo.set(UNPLANNED_SPRINT)
         elif self.sprints:
             sprint_combo.set(self.sprints[0])
+
+        # Sprint link icon
+        sprint_link_btn = tk.Label(sprint_frame, text="🔗", font=("Segoe UI", 10),
+                                   fg=FG_ACCENT, bg=BG_CARD, cursor="hand2")
+        sprint_link_btn.pack(side="left", padx=(5, 0))
+        ToolTip(sprint_link_btn, H.get("sprint_link", "Open sprint in Jira"))
+
+        def _update_sprint_link(*_args):
+            sel = sprint_combo.get()
+            if sel and sel != UNPLANNED_SPRINT and sel in self._sprint_id_map:
+                sprint_link_btn.config(fg=FG_ACCENT, cursor="hand2")
+                sprint_link_btn.bind("<Button-1>", lambda e: self._open_sprint_url(sel))
+            else:
+                sprint_link_btn.config(fg="#555555", cursor="arrow")
+                sprint_link_btn.unbind("<Button-1>")
+
+        sprint_combo.bind("<<ComboboxSelected>>", _update_sprint_link)
+        _update_sprint_link()  # set initial state
 
         # Labels
         labels_frame = tk.Frame(frame, bg=BG_CARD)
@@ -963,7 +1112,7 @@ class SecurityHeartbeatApp:
         lbl_labels = tk.Label(labels_frame, text="Labels:", font=("Segoe UI", 9, "bold"),
                  fg=FG_TEXT, bg=BG_CARD)
         lbl_labels.pack(side="left")
-        ToolTip(lbl_labels, "Comma-separated labels (e.g. 25.10,Hydra)")
+        ToolTip(lbl_labels, H["us_labels"])
         # Default labels: sprint number + team name
         sprint_num = ""
         sprint_val = sprint or ""
@@ -985,13 +1134,27 @@ class SecurityHeartbeatApp:
         if readonly:
             labels_entry.config(state="disabled")
 
+        # Story Points (on same row as labels)
+        lbl_sp = tk.Label(labels_frame, text="SP:", font=("Segoe UI", 9, "bold"),
+                 fg=FG_TEXT, bg=BG_CARD)
+        lbl_sp.pack(side="left", padx=(15, 0))
+        ToolTip(lbl_sp, H.get("us_story_points", "Story Points"))
+        sp_entry = tk.Entry(labels_frame, font=("Segoe UI", 9), bg="#0a0a1a", fg=FG_TEXT,
+                            insertbackground=FG_TEXT, bd=0, width=4,
+                            highlightbackground=BORDER_COLOR, highlightthickness=1,
+                            state="normal")
+        sp_entry.pack(side="left", padx=(5, 0))
+        sp_entry.insert(0, story_points)
+        if readonly:
+            sp_entry.config(state="disabled")
+
         # Assignee
         assign_frame = tk.Frame(frame, bg=BG_CARD)
         assign_frame.pack(fill="x", padx=10, pady=(2, 2))
         lbl_assign = tk.Label(assign_frame, text="Assignee:", font=("Segoe UI", 9, "bold"),
                  fg=FG_TEXT, bg=BG_CARD)
         lbl_assign.pack(side="left")
-        ToolTip(lbl_assign, "Jira username (signum) of the assignee")
+        ToolTip(lbl_assign, H["us_assignee"])
         assignee_entry = tk.Entry(assign_frame, font=("Segoe UI", 9), bg="#0a0a1a", fg=FG_TEXT,
                                   insertbackground=FG_TEXT, bd=0, width=20,
                                   highlightbackground=BORDER_COLOR, highlightthickness=1)
@@ -1004,7 +1167,7 @@ class SecurityHeartbeatApp:
         lbl_comp = tk.Label(assign_frame, text="Components:", font=("Segoe UI", 9, "bold"),
                  fg=FG_TEXT, bg=BG_CARD)
         lbl_comp.pack(side="left")
-        ToolTip(lbl_comp, "Comma-separated component names")
+        ToolTip(lbl_comp, H["us_components"])
         components_entry = tk.Entry(assign_frame, font=("Segoe UI", 9), bg="#0a0a1a", fg=FG_TEXT,
                                     insertbackground=FG_TEXT, bd=0, width=15,
                                     highlightbackground=BORDER_COLOR, highlightthickness=1)
@@ -1017,7 +1180,7 @@ class SecurityHeartbeatApp:
         lbl_prio = tk.Label(assign_frame, text="Priority:", font=("Segoe UI", 9, "bold"),
                  fg=FG_TEXT, bg=BG_CARD)
         lbl_prio.pack(side="left")
-        ToolTip(lbl_prio, "Issue priority (e.g. Minor, Major, Critical)")
+        ToolTip(lbl_prio, H["us_priority"])
         priority_entry = tk.Entry(assign_frame, font=("Segoe UI", 9), bg="#0a0a1a", fg=FG_TEXT,
                                   insertbackground=FG_TEXT, bd=0, width=10,
                                   highlightbackground=BORDER_COLOR, highlightthickness=1)
@@ -1032,10 +1195,14 @@ class SecurityHeartbeatApp:
 
         if not readonly:
             tab_idx = len(self.tab_widgets)
-            self._make_btn(btn_frame, S["split_story"], "#f39c12",
-                           lambda i=tab_idx: self._split_tab(i)).pack(side="left", padx=5)
-            self._make_btn(btn_frame, S["remove_tab"], BTN_DANGER,
-                           lambda i=tab_idx: self._remove_tab(i)).pack(side="right")
+            btn_split = self._make_btn(btn_frame, S["split_story"], "#f39c12",
+                           lambda i=tab_idx: self._split_tab(i))
+            btn_split.pack(side="left", padx=5)
+            ToolTip(btn_split, H["split_story"])
+            btn_remove = self._make_btn(btn_frame, S["remove_tab"], BTN_DANGER,
+                           lambda i=tab_idx: self._remove_tab(i))
+            btn_remove.pack(side="right")
+            ToolTip(btn_remove, H["remove_tab"])
 
         # Info banner for template stories (not yet created)
         if not existing and not readonly:
@@ -1053,7 +1220,9 @@ class SecurityHeartbeatApp:
                                   "assignee": assignee_entry,
                                   "components": components_entry,
                                   "priority": priority_entry,
-                                  "existing": existing, "readonly": readonly})
+                                  "story_points": sp_entry,
+                                  "existing": existing, "readonly": readonly,
+                                  "key": key})
         self.story_tabs.append({"title": title, "description": description, "sprint": sprint})
 
         # Select the new tab
@@ -1068,7 +1237,7 @@ class SecurityHeartbeatApp:
                 pass
         win = tk.Toplevel(self.root)
         win.title(title)
-        win.geometry(geometry)
+        win.geometry(POPUP_GEOMETRIES.get(popup_type, geometry))
         win.configure(bg=BG_DARK)
         self._popups[popup_type] = win
         win.protocol("WM_DELETE_WINDOW", lambda: self._close_popup(popup_type))
@@ -1077,6 +1246,7 @@ class SecurityHeartbeatApp:
     def _close_popup(self, popup_type: str):
         if popup_type in self._popups:
             try:
+                POPUP_GEOMETRIES[popup_type] = self._popups[popup_type].geometry()
                 self._popups[popup_type].destroy()
             except Exception:
                 pass
@@ -1101,7 +1271,7 @@ class SecurityHeartbeatApp:
 
         tk.Label(win, text="[EN] English Translation:", font=("Segoe UI", 10, "bold"),
                  fg=FG_TITLE, bg=BG_DARK).pack(anchor="w", padx=10, pady=(10, 2))
-        preview = scrolledtext.ScrolledText(win, height=12, font=("Consolas", 9),
+        preview = scrolledtext.ScrolledText(win, height=12, font=(MONO_FONT, 9),
                                             bg="#0a0a1a", fg=FG_TEXT, bd=0, wrap="word")
         preview.pack(fill="both", expand=True, padx=10, pady=(0, 10))
         preview.insert("1.0", translated)
@@ -1122,35 +1292,393 @@ class SecurityHeartbeatApp:
         """Show Jira markup syntax in a popup window."""
         win = self._open_popup("markup_help", "Jira Markup Syntax", "440x520")
         win.resizable(False, False)
-        text = tk.Text(win, font=("Consolas", 10), bg="#0a0a1a", fg=FG_TEXT,
+        text = tk.Text(win, font=(MONO_FONT, 10), bg="#0a0a1a", fg=FG_TEXT,
                        bd=0, padx=10, pady=10)
         text.pack(fill="both", expand=True, padx=5, pady=5)
         text.insert("1.0", JIRA_MARKUP_HELP)
         text.config(state="disabled")
         self._make_btn(win, "Close", BTN_DANGER, win.destroy).pack(pady=5)
 
-    def _translate_tab(self, idx):
-        if idx >= len(self.tab_widgets):
+    def _preview_markup(self, text_widget):
+        """Render Jira wiki markup as formatted text in a preview popup."""
+        content = text_widget.get("1.0", "end-1c").replace("\r", "")
+        if not content.strip():
+            self._set_status("No text to preview")
             return
-        w = self.tab_widgets[idx]
-        title = w["title"].get()
-        desc = w["desc"].get("1.0", "end-1c")
 
-        if is_italian(title):
-            title = translate_to_english(title)
-            w["title"].delete(0, "end")
-            w["title"].insert(0, title)
-        if is_italian(desc):
-            desc = translate_to_english(desc)
-            w["desc"].delete("1.0", "end")
-            w["desc"].insert("1.0", desc)
+        win = self._open_popup("markup_preview", "Markup Preview", "620x450")
+        win.resizable(True, True)
 
-        self._set_status("Translation applied")
+        tk.Label(win, text="Jira Markup Preview", font=("Segoe UI", 11, "bold"),
+                 fg=FG_TITLE, bg=BG_DARK).pack(anchor="w", padx=10, pady=(10, 5))
+
+        preview = tk.Text(win, font=("Segoe UI", 10), bg="#0d0d1a", fg=FG_TEXT,
+                          bd=0, wrap="word", padx=10, pady=10,
+                          highlightbackground=BORDER_COLOR, highlightthickness=1)
+        preview.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+
+        # Configure tags for Jira markup rendering
+        preview.tag_configure("bold", font=("Segoe UI", 10, "bold"))
+        preview.tag_configure("italic", font=("Segoe UI", 10, "italic"))
+        preview.tag_configure("bolditalic", font=("Segoe UI", 10, "bold italic"))
+        preview.tag_configure("underline", underline=True)
+        preview.tag_configure("strikethrough", overstrike=True)
+        preview.tag_configure("monospace", font=(MONO_FONT, 9), background="#1a1a2e",
+                              foreground="#a5d6a7", lmargin1=20, lmargin2=20)
+        preview.tag_configure("code_border", font=(MONO_FONT, 9), foreground="#5c6bc0",
+                              background="#0f0f1e")
+        preview.tag_configure("h1", font=("Segoe UI", 14, "bold"), foreground=FG_ACCENT)
+        preview.tag_configure("h2", font=("Segoe UI", 12, "bold"), foreground=FG_ACCENT)
+        preview.tag_configure("h3", font=("Segoe UI", 11, "bold"), foreground=FG_ACCENT)
+        preview.tag_configure("h4", font=("Segoe UI", 10, "bold"), foreground=FG_ACCENT)
+        preview.tag_configure("color_red", foreground="#ef5350")
+        preview.tag_configure("color_green", foreground="#66bb6a")
+        preview.tag_configure("color_blue", foreground="#42a5f5")
+        preview.tag_configure("color_orange", foreground="#ffa726")
+        preview.tag_configure("color_purple", foreground="#ce93d8")
+        preview.tag_configure("color_yellow", foreground="#ffee58")
+        preview.tag_configure("color_cyan", foreground="#4dd0e1")
+        preview.tag_configure("color_gray", foreground="#9e9e9e")
+        preview.tag_configure("color_grey", foreground="#9e9e9e")
+        preview.tag_configure("color_navy", foreground="#5c6bc0")
+        preview.tag_configure("color_teal", foreground="#26a69a")
+        preview.tag_configure("color_maroon", foreground="#a1887f")
+        preview.tag_configure("color_white", foreground="#ffffff")
+        preview.tag_configure("color_black", foreground="#757575")
+        preview.tag_configure("quote", foreground="#b0bec5", lmargin1=20, lmargin2=20,
+                              font=("Segoe UI", 10, "italic"), background="#0f1520")
+        preview.tag_configure("quote_bar", foreground="#5c6bc0", font=("Segoe UI", 10))
+        preview.tag_configure("bullet", lmargin1=15, lmargin2=30)
+        preview.tag_configure("numbered", lmargin1=15, lmargin2=30)
+        preview.tag_configure("table_header", font=(MONO_FONT, 9, "bold"),
+                              background="#1a2a4a")
+        preview.tag_configure("table_cell", font=(MONO_FONT, 9),
+                              background="#0f1a2e")
+        preview.tag_configure("table_border", font=(MONO_FONT, 9),
+                              foreground="#555555")
+        preview.tag_configure("hr", foreground="#555555")
+        preview.tag_configure("link", foreground="#42a5f5", underline=True)
+
+        self._render_jira_markup(preview, content)
+        preview.config(state="disabled")
+
+        self._make_btn(win, "Close", BTN_DANGER, win.destroy).pack(pady=5)
+
+    def _render_jira_markup(self, text_widget, content: str):
+        """Parse and render Jira wiki markup into a tk.Text widget with tags."""
+        import re
+        lines = content.split("\n")
+        in_code_block = False
+        in_noformat = False
+        in_quote_block = False
+        in_panel = False
+        numbered_counter = 0
+        table_rows = []  # accumulate table rows for column alignment
+
+        def _flush_table():
+            """Render accumulated table rows with aligned columns."""
+            nonlocal table_rows
+            if not table_rows:
+                return
+            # Calculate max width per column
+            max_cols = max(len(row["cells"]) for row in table_rows)
+            col_widths = [0] * max_cols
+            for row in table_rows:
+                for i, cell in enumerate(row["cells"]):
+                    col_widths[i] = max(col_widths[i], len(cell))
+            # Render each row with padding
+            for row in table_rows:
+                tag = row["tag"]
+                padded = []
+                for i, cell in enumerate(row["cells"]):
+                    padded.append(cell.ljust(col_widths[i] if i < len(col_widths) else 0))
+                text_widget.insert("end", "  ", "table_border")
+                text_widget.insert("end", " │ ".join(padded), tag)
+                text_widget.insert("end", "\n")
+            table_rows = []
+
+        for line in lines:
+            # --- Multi-line blocks ---
+
+            # {code} handling — multiple forms:
+            # 1. {code} alone on a line → toggle block
+            # 2. {code}text...{code} on same line → inline code block
+            # 3. {code}text (open with content) → start block, text is first line
+            # 4. text{code} (close with content) → text is last line, end block
+            if not in_code_block and re.search(r'\{code[^}]*\}', line):
+                _flush_table()
+                # Check if it's a single-line code: {code}...{code} with content between
+                inline_match = re.match(r'^(.*?)\{code[^}]*\}(.+?)\{code\}(.*)$', line)
+                if inline_match:
+                    # Inline single-line code block
+                    before = inline_match.group(1)
+                    code_content = inline_match.group(2)
+                    after = inline_match.group(3)
+                    if before.strip():
+                        self._render_inline_markup(text_widget, before)
+                        text_widget.insert("end", "\n")
+                    text_widget.insert("end", "  ╭───────────────────────────────────────╮\n", "code_border")
+                    text_widget.insert("end", "  │  " + code_content + "\n", "monospace")
+                    text_widget.insert("end", "  ╰───────────────────────────────────────╯\n", "code_border")
+                    if after.strip():
+                        self._render_inline_markup(text_widget, after)
+                        text_widget.insert("end", "\n")
+                    continue
+                # Check: {code...} alone on line → start block
+                if re.match(r'^\s*\{code[^}]*\}\s*$', line):
+                    in_code_block = True
+                    lang_match = re.search(r'\{code:(\w+)\}', line)
+                    title_match = re.search(r'title=([^|}]+)', line)
+                    label = ""
+                    if title_match:
+                        label = f" {title_match.group(1).strip()}"
+                    elif lang_match:
+                        label = f" [{lang_match.group(1)}]"
+                    text_widget.insert("end", f"  ╭─── code{label} ──────────────────────────╮\n", "code_border")
+                    continue
+                # {code}text... → start block, text is first code line
+                open_match = re.match(r'^\s*\{code[^}]*\}(.+)$', line)
+                if open_match:
+                    in_code_block = True
+                    text_widget.insert("end", "  ╭───────────────────────────────────────╮\n", "code_border")
+                    text_widget.insert("end", "  │  " + open_match.group(1) + "\n", "monospace")
+                    continue
+                # Fallthrough: should not happen, but treat as normal line
+            elif in_code_block:
+                # Check if line ends the code block
+                close_match = re.match(r'^(.*?)\{code\}\s*$', line)
+                if close_match:
+                    in_code_block = False
+                    content_before = close_match.group(1)
+                    if content_before.strip():
+                        text_widget.insert("end", "  │  " + content_before + "\n", "monospace")
+                    text_widget.insert("end", "  ╰───────────────────────────────────────╯\n", "code_border")
+                else:
+                    text_widget.insert("end", "  │  " + line + "\n", "monospace")
+                continue
+
+            # {noformat} — same logic (simplified: assumes alone on line)
+            if re.match(r'^\s*\{noformat[^}]*\}\s*$', line):
+                _flush_table()
+                if in_noformat:
+                    in_noformat = False
+                    text_widget.insert("end", "  ╰───────────────────────────────────────╯\n", "code_border")
+                else:
+                    in_noformat = True
+                    text_widget.insert("end", "  ╭─── noformat ────────────────────────────╮\n", "code_border")
+                continue
+            if in_noformat:
+                text_widget.insert("end", "  │  " + line + "\n", "monospace")
+                continue
+
+            # {quote}
+            if re.match(r'^\s*\{quote\}\s*$', line):
+                _flush_table()
+                if in_quote_block:
+                    in_quote_block = False
+                else:
+                    in_quote_block = True
+                continue
+            if in_quote_block:
+                text_widget.insert("end", "  ┃ ", "quote_bar")
+                self._render_inline_markup(text_widget, line)
+                text_widget.insert("end", "\n")
+                continue
+
+            # {panel} — simplified rendering
+            if re.match(r'^\s*\{panel(?::[^}]*)?\}\s*$', line):
+                _flush_table()
+                if in_panel:
+                    in_panel = False
+                    text_widget.insert("end", "  └─────────────────────────────\n", "hr")
+                else:
+                    in_panel = True
+                    title_match = re.search(r'title=([^|}]+)', line)
+                    if title_match:
+                        text_widget.insert("end", f"  ┌─ {title_match.group(1).strip()} ─────────────\n", "table_header")
+                    else:
+                        text_widget.insert("end", "  ┌─────────────────────────────\n", "hr")
+                continue
+            if in_panel:
+                text_widget.insert("end", "  │ ", "hr")
+                self._render_inline_markup(text_widget, line)
+                text_widget.insert("end", "\n")
+                continue
+
+            # --- Single-line elements ---
+
+            # Headings: h1. through h6.
+            h_match = re.match(r'^h([1-6])\.\s*(.*)', line)
+            if h_match:
+                _flush_table()
+                level = int(h_match.group(1))
+                heading_text = h_match.group(2)
+                tag = f"h{min(level, 4)}"
+                text_widget.insert("end", heading_text + "\n", tag)
+                numbered_counter = 0
+                continue
+
+            # Horizontal rule
+            if line.strip() == "----":
+                _flush_table()
+                text_widget.insert("end", "─" * 50 + "\n", "hr")
+                continue
+
+            # Blockquote (single line)
+            if line.startswith("bq. "):
+                _flush_table()
+                text_widget.insert("end", "  ┃ ", "quote_bar")
+                self._render_inline_markup(text_widget, line[4:])
+                text_widget.insert("end", "\n")
+                continue
+
+            # Bullet list (* or ** or ***)
+            bullet_match = re.match(r'^(\*+|-)\s+(.*)', line)
+            if bullet_match:
+                _flush_table()
+                depth = len(bullet_match.group(1)) if bullet_match.group(1) != "-" else 1
+                indent = "  " * depth
+                text_widget.insert("end", indent + "• ", "bullet")
+                self._render_inline_markup(text_widget, bullet_match.group(2))
+                text_widget.insert("end", "\n")
+                numbered_counter = 0
+                continue
+
+            # Numbered list (# or ## or ###)
+            num_match = re.match(r'^(#+)\s+(.*)', line)
+            if num_match:
+                _flush_table()
+                depth = len(num_match.group(1))
+                numbered_counter += 1
+                indent = "  " * depth
+                text_widget.insert("end", f"{indent}{numbered_counter}. ", "numbered")
+                self._render_inline_markup(text_widget, num_match.group(2))
+                text_widget.insert("end", "\n")
+                continue
+            else:
+                if numbered_counter:
+                    numbered_counter = 0
+
+            # Table row (|| for headers, | for cells) — accumulate for alignment
+            if line.strip().startswith("||"):
+                cells = [c.strip() for c in re.split(r'\|\|', line.strip()) if c.strip()]
+                table_rows.append({"cells": cells, "tag": "table_header"})
+                continue
+            elif line.strip().startswith("|") and "|" in line.strip()[1:]:
+                cells = [c.strip() for c in line.strip().split("|") if c.strip()]
+                table_rows.append({"cells": cells, "tag": "table_cell"})
+                continue
+            else:
+                _flush_table()
+
+            # Regular line — apply inline formatting
+            self._render_inline_markup(text_widget, line)
+            text_widget.insert("end", "\n")
+
+        # Flush any remaining table at end of content
+        _flush_table()
+
+    def _render_inline_markup(self, text_widget, line: str):
+        """Render inline Jira markup (bold, italic, color, links, etc.) into text widget."""
+        import re
+
+        # Emoticons / special symbols
+        emoticons = {
+            "(/)": "✓", "(x)": "✗", "(i)": "ℹ", "(!)": "⚠",
+            "(+)": "⊕", "(-)": "⊖", "(?)": "?", "(on)": "💡", "(off)": "○",
+            "(*r)": "★", "(*g)": "★", "(*b)": "★", "(*y)": "★",
+        }
+        for token, symbol in emoticons.items():
+            line = line.replace(token, symbol)
+
+        # Forced line break \\
+        line = line.replace("\\\\", "\n")
+
+        # Escaped markup: \* \_ \- \+ → remove backslash
+        line = re.sub(r'\\([*_\-+~^{}\[\]])', r'\1', line)
+
+        # Pattern priority order matters — longer/more-specific patterns first
+        patterns = [
+            (r'\{color:(\w+)\}(.*?)\{color\}', 'color'),
+            (r'\{\{(.*?)\}\}', 'monospace'),
+            (r'\*_(.*?)_\*', 'bolditalic'),
+            (r'_\*(.*?)\*_', 'bolditalic'),
+            (r'\*([^*\n]+?)\*', 'bold'),
+            (r'(?<!\w)_([^_\n]+?)_(?!\w)', 'italic'),
+            (r'\+([^+\n]+?)\+', 'underline'),
+            (r'(?<!\w)-([^\-\n]+?)-(?!\w)', 'strikethrough'),
+            (r'\^([^^]+?)\^', 'superscript'),
+            (r'~([^~]+?)~', 'subscript'),
+            (r'\?\?([^?]+?)\?\?', 'citation'),
+            (r'\[([^|\]\n]+)\|([^|\]\n]+)(?:\|[^\]\n]*)?\]', 'link_with_text'),
+            (r'\[(https?://[^\]\n]+)\]', 'link'),
+            (r'\[(mailto:[^\]\n]+)\]', 'link'),
+            (r'!([\w./\-]+)(?:\|[^!]*)?\!', 'image'),
+        ]
+
+        segments = []  # (start, end, tag, display_text)
+
+        for pattern, tag_type in patterns:
+            for m in re.finditer(pattern, line):
+                if tag_type == 'color':
+                    color_name = m.group(1).lower()
+                    known_colors = ("red", "green", "blue", "orange", "purple",
+                                    "yellow", "cyan", "gray", "grey", "navy",
+                                    "teal", "maroon", "white", "black")
+                    if color_name in known_colors:
+                        tag = f"color_{color_name}"
+                    else:
+                        tag = "bold"
+                    segments.append((m.start(), m.end(), tag, m.group(2)))
+                elif tag_type == 'link_with_text':
+                    segments.append((m.start(), m.end(), "link", f"{m.group(1)} ↗"))
+                elif tag_type == 'link':
+                    segments.append((m.start(), m.end(), "link", f"{m.group(1)} ↗"))
+                elif tag_type == 'image':
+                    segments.append((m.start(), m.end(), "link", f"[img: {m.group(1)}]"))
+                elif tag_type == 'citation':
+                    segments.append((m.start(), m.end(), "italic", f"— {m.group(1)}"))
+                elif tag_type == 'superscript':
+                    segments.append((m.start(), m.end(), "bold", f"^{m.group(1)}"))
+                elif tag_type == 'subscript':
+                    segments.append((m.start(), m.end(), "italic", f"_{m.group(1)}"))
+                else:
+                    segments.append((m.start(), m.end(), tag_type, m.group(1)))
+
+        if not segments:
+            text_widget.insert("end", line)
+            return
+
+        # Sort by position, handle non-overlapping
+        segments.sort(key=lambda s: s[0])
+        pos = 0
+        for start, end, tag, display in segments:
+            if start < pos:
+                continue  # skip overlapping
+            if start > pos:
+                text_widget.insert("end", line[pos:start])
+            text_widget.insert("end", display, tag)
+            pos = end
+        if pos < len(line):
+            text_widget.insert("end", line[pos:])
+
+    def _show_epic_readonly_help(self):
+        """Show a help popup explaining why Epic Description is read-only."""
+        messagebox.showinfo(
+            "Read-Only Field",
+            "The Epic Description field is read-only.\n\n"
+            "To modify the epic description, edit it directly\n"
+            "in Jira on the epic issue page.\n\n"
+            "This tool only creates/updates User Stories\n"
+            "linked to the selected epic."
+        )
 
     def _split_tab(self, idx):
         if idx >= len(self.tab_widgets):
             return
         w = self.tab_widgets[idx]
+        if w is None:
+            return
         title = w["title"].get()
         desc = w["desc"].get("1.0", "end-1c")
         self._add_tab(f"{title} (part 2)", desc, w["sprint"].get())
@@ -1189,6 +1717,33 @@ class SecurityHeartbeatApp:
                                 "components": components, "priority": priority})
         return stories
 
+    def _validate_stories(self, stories: list[dict]) -> list[str]:
+        """Validate stories before creation. Returns list of error messages."""
+        errors = []
+        unplanned_count = 0
+        empty_desc_count = 0
+        empty_ac_count = 0
+        for i, s in enumerate(stories, 1):
+            title = s["title"]
+            if not title or title == "New Story":
+                errors.append(f"Story #{i}: title is empty or placeholder ('New Story')")
+            if len(title) > 255:
+                errors.append(f"Story #{i}: title too long ({len(title)} chars, max 255)")
+            sprint = s.get("sprint", "")
+            if not sprint or sprint == UNPLANNED_SPRINT:
+                unplanned_count += 1
+            if not s.get("description", "").strip():
+                empty_desc_count += 1
+            if not s.get("acceptance_criteria", "").strip():
+                empty_ac_count += 1
+        if unplanned_count:
+            errors.append(f"{unplanned_count} story/stories still have sprint '{UNPLANNED_SPRINT}' — assign a real sprint")
+        if empty_desc_count:
+            errors.append(f"{empty_desc_count} story/stories have empty Description")
+        if empty_ac_count:
+            errors.append(f"{empty_ac_count} story/stories have empty Acceptance Criteria")
+        return errors
+
     def _save_stories_to_file(self):
         """Save stories to a JSON file with all fields ready for creation."""
         stories = self._collect_stories()
@@ -1222,6 +1777,148 @@ class SecurityHeartbeatApp:
                 json.dump(export, f, indent=2, ensure_ascii=False)
             self._set_status(f"Saved {len(stories)} stories to {filepath}")
 
+    def _show_scheduling(self):
+        """Show sprint scheduling as a proper table: columns = sprints, rows = US IDs."""
+        # Collect key and sprint from tabs
+        sprint_map = {}  # sprint_name -> list of IDs
+        unplanned = []
+        for w in self.tab_widgets:
+            if w is None:
+                continue
+            title = w["title"].get().strip()
+            if not title:
+                continue
+            sprint = w["sprint"].get().strip()
+            key = w.get("key", "")
+            label = key if key else f"(new) {title[:30]}"
+            if not sprint or sprint == UNPLANNED_SPRINT:
+                unplanned.append(label)
+            else:
+                sprint_map.setdefault(sprint, []).append(label)
+
+        if not sprint_map and not unplanned:
+            messagebox.showwarning("No Stories", "No stories to schedule.")
+            return
+
+        # Get sprint details for dates
+        sprint_details = {}
+        if JIRA_AVAILABLE:
+            import jira_client
+            try:
+                for sd in jira_client.get_board_sprints_details():
+                    sprint_details[sd["name"]] = sd
+            except Exception:
+                pass
+
+        # All columns (sprints used + unplanned if any)
+        columns = list(sprint_map.keys())
+        if unplanned:
+            columns.append(UNPLANNED_SPRINT)
+            sprint_map[UNPLANNED_SPRINT] = unplanned
+
+        # Determine max rows needed
+        max_rows = max(len(v) for v in sprint_map.values())
+
+        col_width = max(18, max(len(c) for c in columns) + 2)
+        win_width = min(1000, 20 + len(columns) * (col_width * 8 + 20))
+        win_height = min(600, 120 + max_rows * 24)
+
+        win = self._open_popup("scheduling", "📅 Sprint Scheduling",
+                               f"{win_width}x{win_height}")
+        win.resizable(True, True)
+
+        def _fmt_date(d):
+            return d[:10] if d and len(d) >= 10 else ""
+
+        # Table frame with grid
+        table = tk.Frame(win, bg=BG_DARK)
+        table.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Header row
+        for col_idx, sprint_name in enumerate(columns):
+            hdr_frame = tk.Frame(table, bg=BTN_PRIMARY, bd=1, relief="solid")
+            hdr_frame.grid(row=0, column=col_idx, sticky="nsew", padx=1, pady=1)
+            fg = "white" if sprint_name != UNPLANNED_SPRINT else "#ffcc80"
+            tk.Label(hdr_frame, text=sprint_name, font=("Segoe UI", 9, "bold"),
+                     fg=fg, bg=BTN_PRIMARY, anchor="center").pack(padx=4, pady=(3, 0))
+            # Dates sub-line
+            sd = sprint_details.get(sprint_name, {})
+            start = _fmt_date(sd.get("startDate", ""))
+            end = _fmt_date(sd.get("endDate", ""))
+            if start or end:
+                tk.Label(hdr_frame, text=f"{start} → {end}", font=("Segoe UI", 7),
+                         fg="#cccccc", bg=BTN_PRIMARY, anchor="center").pack(padx=4, pady=(0, 3))
+            else:
+                tk.Frame(hdr_frame, bg=BTN_PRIMARY, height=3).pack()
+            table.columnconfigure(col_idx, weight=1)
+
+        # Data rows
+        for row_idx in range(max_rows):
+            for col_idx, sprint_name in enumerate(columns):
+                stories = sprint_map[sprint_name]
+                bg = "#0a1a2e" if row_idx % 2 == 0 else "#0d2240"
+                cell = tk.Frame(table, bg=bg, bd=1, relief="solid",
+                                highlightbackground="#1a3a5c", highlightthickness=1)
+                cell.grid(row=row_idx + 1, column=col_idx, sticky="nsew", padx=1, pady=0)
+                if row_idx < len(stories):
+                    fg = FG_TEXT if sprint_name != UNPLANNED_SPRINT else FG_WARN
+                    tk.Label(cell, text=stories[row_idx], font=(MONO_FONT, 9),
+                             fg=fg, bg=bg, anchor="center").pack(pady=2, padx=4)
+                table.rowconfigure(row_idx + 1, weight=0)
+
+    def _classify_stories(self, stories: list[dict]) -> list[dict]:
+        """Classify each story as 'new', 'modified', or 'unchanged'.
+
+        Compares current tab data against cached epic stories from Jira.
+        """
+        epic_key = self.selected_epic["key"] if self.selected_epic else ""
+        cached = self._epic_stories_cache.get(epic_key, [])
+        cached_map = {s["key"]: s for s in cached if s.get("key")}
+
+        classified = []
+        tab_idx = 0
+        for i, s in enumerate(stories):
+            # Find the matching tab_widget (skip None entries from removed tabs)
+            while tab_idx < len(self.tab_widgets) and self.tab_widgets[tab_idx] is None:
+                tab_idx += 1
+            w = self.tab_widgets[tab_idx] if tab_idx < len(self.tab_widgets) else None
+            tab_idx += 1
+
+            if w is None:
+                continue
+            key = w.get("key", "")
+            if not key or not w.get("existing", False):
+                # No Jira key — brand new story
+                classified.append({**s, "_status": "new", "_key": ""})
+            elif key in cached_map:
+                # Existing story — check if modified
+                orig = cached_map[key]
+                changed = False
+                if s["title"].strip() != orig.get("summary", "").strip():
+                    changed = True
+                if s["description"].strip() != orig.get("description", "").strip():
+                    changed = True
+                if s.get("acceptance_criteria", "").strip() != orig.get("acceptance_criteria", "").strip():
+                    changed = True
+                if s.get("sprint", "").strip() != orig.get("sprint", "").strip():
+                    changed = True
+                s_labels = sorted(s.get("labels") or [])
+                o_labels = sorted(orig.get("labels") or [])
+                if s_labels != o_labels:
+                    changed = True
+                if (s.get("assignee_key") or "") != (orig.get("assignee_key") or ""):
+                    changed = True
+                if sorted(s.get("components") or []) != sorted(orig.get("components") or []):
+                    changed = True
+                if (s.get("priority") or "") != (orig.get("priority") or ""):
+                    changed = True
+                status = "modified" if changed else "unchanged"
+                classified.append({**s, "_status": status, "_key": key})
+            else:
+                # Has a key but not in cache — treat as new
+                classified.append({**s, "_status": "new", "_key": key})
+        return classified
+
     def _create_stories(self):
         stories = self._collect_stories()
         if not stories:
@@ -1237,30 +1934,63 @@ class SecurityHeartbeatApp:
                                  "Jira not configured.\nEnter credentials and click Connect, or set environment variables.")
             return
 
-        # Custom confirmation dialog
+        # Validate stories before proceeding
+        validation_errors = self._validate_stories(stories)
+        if validation_errors:
+            messagebox.showerror("Validation Error",
+                                 "Fix the following before creating:\n\n" +
+                                 "\n".join(validation_errors))
+            return
+
+        # Classify stories as new/modified/unchanged
+        classified = self._classify_stories(stories)
+        new_count = sum(1 for s in classified if s["_status"] == "new")
+        mod_count = sum(1 for s in classified if s["_status"] == "modified")
+        unch_count = sum(1 for s in classified if s["_status"] == "unchanged")
+
+        if not new_count and not mod_count:
+            messagebox.showinfo("No Changes",
+                                "All stories are unchanged. Nothing to create or update.")
+            return
+
+        # --- First confirmation: review list with status icons ---
         confirmed = [False]
-        win = self._open_popup("confirm_create", "Confirm Creation", "650x450")
-        win.resizable(False, True)
+        win = self._open_popup("confirm_create", "Confirm Create/Update", "700x520")
+        win.resizable(True, True)
         win.grab_set()
 
         # Header
         hdr = tk.Frame(win, bg=BG_PANEL)
         hdr.pack(fill="x", padx=10, pady=(10, 5))
-        tk.Label(hdr, text=f"🚀 Create {len(stories)} User Stories?",
+        tk.Label(hdr, text="🚀 Create/Update User Stories",
                  font=("Segoe UI", 13, "bold"), fg=FG_TITLE, bg=BG_PANEL).pack(side="left")
 
         # Epic info
         tk.Label(win, text=f"Epic: [{self.selected_epic['key']}] {self.selected_epic.get('summary', '')}",
-                 font=("Segoe UI", 9), fg="#aaaaaa", bg=BG_DARK, wraplength=600, justify="left"
-                 ).pack(anchor="w", padx=10, pady=(0, 8))
+                 font=("Segoe UI", 9), fg="#aaaaaa", bg=BG_DARK, wraplength=660, justify="left"
+                 ).pack(anchor="w", padx=10, pady=(0, 5))
+
+        # Legend
+        legend = tk.Frame(win, bg=BG_DARK)
+        legend.pack(fill="x", padx=10, pady=(0, 8))
+        tk.Label(legend, text="🆕 New", font=("Segoe UI", 9, "bold"),
+                 fg="#66bb6a", bg=BG_DARK).pack(side="left", padx=(0, 12))
+        tk.Label(legend, text="✏️ Modified", font=("Segoe UI", 9, "bold"),
+                 fg="#ffb74d", bg=BG_DARK).pack(side="left", padx=(0, 12))
+        tk.Label(legend, text="═ Unchanged", font=("Segoe UI", 9, "bold"),
+                 fg="#888888", bg=BG_DARK).pack(side="left", padx=(0, 12))
+        tk.Label(legend, text=f"({new_count} new, {mod_count} modified, {unch_count} unchanged)",
+                 font=("Segoe UI", 8), fg="#aaaaaa", bg=BG_DARK).pack(side="right")
 
         # Stories list with columns
         list_frame = tk.Frame(win, bg=BG_DARK)
         list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
 
         # Header row
-        col_hdr = tk.Frame(list_frame, bg=ERICSSON_LIGHT if 'ERICSSON_LIGHT' in dir() else BTN_PRIMARY)
+        col_hdr = tk.Frame(list_frame, bg=BTN_PRIMARY)
         col_hdr.pack(fill="x")
+        tk.Label(col_hdr, text="St", font=("Segoe UI", 8, "bold"),
+                 fg="white", bg=BTN_PRIMARY, width=3).pack(side="left")
         tk.Label(col_hdr, text=" # ", font=("Segoe UI", 8, "bold"),
                  fg="white", bg=BTN_PRIMARY, width=3).pack(side="left")
         tk.Label(col_hdr, text=" Title", font=("Segoe UI", 8, "bold"),
@@ -1271,37 +2001,44 @@ class SecurityHeartbeatApp:
                  fg="white", bg=BTN_PRIMARY, width=10).pack(side="right")
 
         # Scrollable list
-        canvas = tk.Canvas(list_frame, bg=BG_DARK, highlightthickness=0, height=250)
+        canvas = tk.Canvas(list_frame, bg=BG_DARK, highlightthickness=0, height=270)
         scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=canvas.yview)
         inner = tk.Frame(canvas, bg=BG_DARK)
         inner.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.create_window((0, 0), window=inner, anchor="nw", width=610)
+        canvas.create_window((0, 0), window=inner, anchor="nw", width=660)
         canvas.configure(yscrollcommand=scrollbar.set)
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
-        for i, s in enumerate(stories, 1):
-            bg = "#0a1a2e" if i % 2 == 0 else "#0d2240"
-            row = tk.Frame(inner, bg=bg)
+        status_icons = {"new": "🆕", "modified": "✏️", "unchanged": "═"}
+        status_colors = {"new": "#66bb6a", "modified": "#ffb74d", "unchanged": "#888888"}
+
+        for i, s in enumerate(classified, 1):
+            st = s["_status"]
+            row_bg = "#0a1a2e" if i % 2 == 0 else "#0d2240"
+            row = tk.Frame(inner, bg=row_bg)
             row.pack(fill="x")
-            tk.Label(row, text=f" {i:2d}", font=("Consolas", 9),
-                     fg=FG_ACCENT, bg=bg, width=3).pack(side="left")
-            tk.Label(row, text=f" {s['title'][:55]}{'…' if len(s['title'])>55 else ''}",
-                     font=("Segoe UI", 9), fg=FG_TEXT, bg=bg,
+            tk.Label(row, text=status_icons[st], font=("Segoe UI", 9),
+                     fg=status_colors[st], bg=row_bg, width=3).pack(side="left")
+            tk.Label(row, text=f" {i:2d}", font=(MONO_FONT, 9),
+                     fg=FG_ACCENT, bg=row_bg, width=3).pack(side="left")
+            title_fg = status_colors[st] if st != "unchanged" else "#888888"
+            tk.Label(row, text=f" {s['title'][:50]}{'…' if len(s['title'])>50 else ''}",
+                     font=("Segoe UI", 9), fg=title_fg, bg=row_bg,
                      anchor="w").pack(side="left", fill="x", expand=True)
             sprint_txt = s.get("sprint", "—")[:18]
             tk.Label(row, text=sprint_txt, font=("Segoe UI", 8),
-                     fg="#90caf9", bg=bg, width=18).pack(side="right")
+                     fg="#90caf9", bg=row_bg, width=18).pack(side="right")
             assign_txt = s.get("assignee_key", "—")[:10]
             tk.Label(row, text=assign_txt, font=("Segoe UI", 8),
-                     fg="#b0bec5", bg=bg, width=10).pack(side="right")
+                     fg="#b0bec5", bg=row_bg, width=10).pack(side="right")
 
         # Summary footer
         footer = tk.Frame(win, bg=BG_PANEL)
         footer.pack(fill="x", padx=10, pady=(5, 5))
-        tk.Label(footer, text=f"📊 Total: {len(stories)} stories  |  "
-                 f"Assignees: {len(set(s.get('assignee_key','') for s in stories if s.get('assignee_key')))}  |  "
-                 f"Sprints: {len(set(s.get('sprint','') for s in stories if s.get('sprint')))}",
+        tk.Label(footer, text=f"📊 Total: {len(classified)} stories  |  "
+                 f"🆕 {new_count} to create  |  ✏️ {mod_count} to update  |  "
+                 f"═ {unch_count} unchanged (skipped)",
                  font=("Segoe UI", 9), fg="#aaaaaa", bg=BG_PANEL).pack(anchor="w")
 
         # Buttons
@@ -1317,37 +2054,73 @@ class SecurityHeartbeatApp:
             win.grab_release()
             win.destroy()
 
-        self._make_btn(btn_frame, "✓ Confirm & Create", BTN_SUCCESS, do_confirm).pack(side="left", padx=5)
+        self._make_btn(btn_frame, "✓ Proceed", BTN_SUCCESS, do_confirm).pack(side="left", padx=5)
         self._make_btn(btn_frame, "✗ Cancel", BTN_DANGER, do_cancel).pack(side="left", padx=5)
 
         win.wait_window()
         if not confirmed[0]:
             return
 
+        # --- Second confirmation: "Are you sure?" ---
+        sure = messagebox.askyesno(
+            "Final Confirmation",
+            f"Are you sure you want to apply changes to Jira?\n\n"
+            f"  • {new_count} story/stories will be CREATED\n"
+            f"  • {mod_count} story/stories will be UPDATED\n"
+            f"  • {unch_count} unchanged (will be skipped)\n\n"
+            f"This action cannot be undone.",
+            icon="warning"
+        )
+        if not sure:
+            self._set_status("Operation cancelled by user")
+            return
+
+        # --- Execute create/update ---
         epic_key = self.selected_epic["key"]
         created = []
+        updated = []
         errors = []
-        log.info(f"Creating {len(stories)} stories for epic {epic_key}")
+        log.info(f"Creating/Updating stories for epic {epic_key} "
+                 f"({new_count} new, {mod_count} modified, {unch_count} unchanged)")
         import jira_client
-        for s in stories:
+        for s in classified:
+            st = s["_status"]
+            if st == "unchanged":
+                continue
             try:
-                key = jira_client.create_story(epic_key, s["title"], s["description"],
-                                               s.get("sprint"), s.get("labels"),
-                                               s.get("assignee_key"), s.get("components"),
-                                               s.get("priority"), s.get("acceptance_criteria", ""))
-                created.append(key)
-                log.info(f"  Created {key}: {s['title']}")
+                if st == "new":
+                    key = jira_client.create_story(
+                        epic_key, s["title"], s["description"],
+                        s.get("sprint"), s.get("labels"),
+                        s.get("assignee_key"), s.get("components"),
+                        s.get("priority"), s.get("acceptance_criteria", ""))
+                    created.append(key)
+                    log.info(f"  Created {key}: {s['title']}")
+                elif st == "modified":
+                    issue_key = s["_key"]
+                    jira_client.update_story(
+                        issue_key, s["title"], s["description"],
+                        s.get("sprint", ""), s.get("labels"),
+                        s.get("assignee_key", ""), s.get("components"),
+                        s.get("priority", ""), s.get("acceptance_criteria", ""))
+                    updated.append(issue_key)
+                    log.info(f"  Updated {issue_key}: {s['title']}")
             except Exception as e:
-                errors.append(f"{s['title']}: {e}")
-                log.error(f"  Failed: {s['title']}: {e}")
+                label = s.get("_key") or s["title"]
+                errors.append(f"{label}: {e}")
+                log.error(f"  Failed: {label}: {e}")
 
         msg = ""
         if created:
             msg += f"✓ Created: {', '.join(created)}\n"
+        if updated:
+            msg += f"✓ Updated: {', '.join(updated)}\n"
         if errors:
             msg += f"\n✗ Errors:\n" + "\n".join(errors)
+        if not msg:
+            msg = "No changes applied."
         messagebox.showinfo("Results", msg)
-        self._set_status(f"Created {len(created)} stories")
+        self._set_status(f"Created {len(created)}, Updated {len(updated)} stories")
 
     def _save(self):
         sel = self.epic_combo.curselection()
@@ -1383,11 +2156,25 @@ class SecurityHeartbeatApp:
         """Show application version history / changelog."""
         win = self._open_popup("history", "Application History", "600x400")
 
-        text = scrolledtext.ScrolledText(win, font=("Consolas", 9),
+        text = scrolledtext.ScrolledText(win, font=(MONO_FONT, 9),
                                           bg="#0a0a1a", fg=FG_TEXT, bd=0)
         text.pack(fill="both", expand=True, padx=10, pady=10)
 
         changelog = (
+            "═══ v1.3.0 (2026-07-27) ═══\n"
+            "  • Create/Update confirmation popup with status icons (New/Modified/Unchanged)\n"
+            "  • Double confirmation step before writing to Jira\n"
+            "  • Epic Description field visually marked as read-only with help button\n"
+            "  • Added update_story API to modify existing stories in Jira\n"
+            "  • Button label changed to 'Create/Update User Stories'\n"
+            "\n"
+            "═══ v1.2.0 (2026-06-17) ═══\n"
+            "  • Sprint default '— Unplanned —' for new stories\n"
+            "  • Creation blocked if any story has unplanned sprint\n"
+            "  • Validation: empty description or acceptance criteria blocks creation\n"
+            "  • Validation errors show cause and count of affected stories\n"
+            "  • Scheduling button: sprint/stories mapping table with dates\n"
+            "\n"
             "═══ v1.1.0 (2026-06-08) ═══\n"
             "  • Stories editable only if Open or not yet created\n"
             "  • Story list updates when selecting different epics\n"
@@ -1413,7 +2200,7 @@ class SecurityHeartbeatApp:
         )
         text.insert("1.0", changelog)
         text.config(state="disabled")
-        text.tag_config("header", foreground=FG_TITLE, font=("Consolas", 9, "bold"))
+        text.tag_config("header", foreground=FG_TITLE, font=(MONO_FONT, 9, "bold"))
 
         self._make_btn(win, S["close"], BTN_DANGER, win.destroy).pack(pady=5)
 
@@ -1424,6 +2211,11 @@ class SecurityHeartbeatApp:
 
     def _on_close(self):
         self._save()
+        # Save window geometries to app_config.json
+        save_app_config({
+            "window_geometry": self.root.geometry(),
+            "popup_geometries": POPUP_GEOMETRIES,
+        })
         log.info("Application closed")
         self.root.destroy()
 

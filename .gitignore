@@ -5,3 +5,6 @@ __pycache__/
 .secheartbeat_state.json
 .secheartbeat_history.json
 securityHeartbeatGenerator.log
+*.json
+!app_config.json
+.kiro/

@@ -2,9 +2,17 @@
   "jira_url": "https://eteamproject-alpha.internal.ericsson.com",
   "project": "TORF",
   "issuetype": "Epic",
-  "summary_contains": "Security,Heartbeat",
+  "summary_contains": "Security,Heartbeat,recurrent",
   "story_issuetype": "Story",
   "max_epics": 5,
   "team_name": "Hydra",
-  "board_id": 38770
+  "board_id": 38770,
+  "window_geometry": "1861x1209+294+135",
+  "popup_geometries": {
+    "markup_help": "440x520+1060+424",
+    "translate": "601x350+1620+857",
+    "scheduling": "700x500+930+422",
+    "history": "600x400+980+484",
+    "markup_preview": "1412x450+970+459"
+  }
 }
