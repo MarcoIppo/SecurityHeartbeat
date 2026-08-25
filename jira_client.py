@@ -1,7 +1,11 @@
 """Jira interaction module."""
 import re
+import logging
+import time
 from jira import JIRA
 from config import JIRA_URL, JIRA_USER, JIRA_TOKEN, JIRA_PROJECT, EPIC_NAME_PATTERN, EPIC_ISSUETYPE, STORY_ISSUETYPE, MAX_EPICS, BOARD_ID
+
+log = logging.getLogger("secheartbeat.jira")
 
 
 _ac_field_id = None  # cached acceptance criteria field id
@@ -51,6 +55,7 @@ def _parse_sprint_name(sprint_val) -> str:
 def get_client() -> JIRA:
     """Create a fresh JIRA client using current config values."""
     from config import JIRA_URL, JIRA_TOKEN
+    log.debug(f"Creating JIRA client for server: {JIRA_URL}")
     return JIRA(server=JIRA_URL, token_auth=JIRA_TOKEN)
 
 
@@ -103,7 +108,11 @@ def get_open_epics() -> list[dict]:
         f'AND {summary_clauses} '
         f'ORDER BY created DESC'
     )
+    log.debug(f"get_open_epics() JQL: {jql}")
+    t0 = time.time()
     issues = client.search_issues(jql, maxResults=MAX_EPICS, fields="summary,description,status,resolution")
+    elapsed = time.time() - t0
+    log.info(f"get_open_epics(): found {len(issues)} epics in {elapsed:.2f}s")
     return [
         {"key": str(i.key), "summary": i.fields.summary,
          "description": i.fields.description or "",
@@ -116,11 +125,14 @@ def get_open_epics() -> list[dict]:
 def get_epic_stories(epic_key: str) -> list[dict]:
     """Get user stories linked to an epic, including acceptance criteria."""
     epic_key = _validate_issue_key(epic_key)
+    log.debug(f"get_epic_stories({epic_key})")
+    t0 = time.time()
     client = get_client()
     ac_field = _get_ac_field(client)
     sp_field = _get_story_points_field(client)
     epic_link_field = _get_epic_link_field(client)
     jql = f'"Epic Link" = "{epic_key}" AND issuetype = "{STORY_ISSUETYPE}" ORDER BY key ASC'
+    log.debug(f"  JQL: {jql}")
     issues = client.search_issues(jql, maxResults=100)
     results = []
     for i in issues:
@@ -163,11 +175,15 @@ def get_epic_stories(epic_key: str) -> list[dict]:
             "priority": priority,
             "epic_link": current_epic,
         })
+    elapsed = time.time() - t0
+    log.info(f"get_epic_stories({epic_key}): {len(results)} stories in {elapsed:.2f}s")
     return results
 
 
 def get_historical_stories() -> list[dict]:
     """Get stories from closed heartbeat epics."""
+    log.debug("get_historical_stories()")
+    t0 = time.time()
     client = get_client()
     ac_field = _get_ac_field(client)
     project = _sanitize_jql_value(JIRA_PROJECT)
@@ -196,6 +212,8 @@ def get_historical_stories() -> list[dict]:
                     "description": i.fields.description or "",
                     "acceptance_criteria": ac
                 })
+    elapsed = time.time() - t0
+    log.info(f"get_historical_stories(): {len(stories)} stories in {elapsed:.2f}s")
     return stories
 
 
@@ -204,10 +222,13 @@ def get_board_sprints() -> list[str]:
 
     Filters out stale sprints (year < current year - 1) that were never closed.
     """
+    log.debug(f"get_board_sprints() board_id={BOARD_ID}")
+    t0 = time.time()
     client = get_client()
     try:
         sprints = client.sprints(BOARD_ID, state="active,future")
         names = [s.name for s in sprints]
+        log.debug(f"  Raw sprints from board: {len(names)}")
         # Filter out stale sprints: keep only those with year >= (current - 1)
         import re
         from datetime import datetime
@@ -224,13 +245,18 @@ def get_board_sprints() -> list[str]:
             else:
                 # No recognizable pattern — keep it
                 filtered.append(name)
+        elapsed = time.time() - t0
+        log.info(f"get_board_sprints(): {len(filtered)} sprints (filtered from {len(names)}) in {elapsed:.2f}s")
         return sorted(filtered)
-    except Exception:
+    except Exception as e:
+        elapsed = time.time() - t0
+        log.error(f"get_board_sprints() FAILED in {elapsed:.2f}s: {e}")
         return []
 
 
 def get_board_sprints_details() -> list[dict]:
     """Get active and future sprints with name, startDate, endDate."""
+    log.debug(f"get_board_sprints_details() board_id={BOARD_ID}")
     client = get_client()
     try:
         sprints = client.sprints(BOARD_ID, state="active,future")
@@ -242,18 +268,44 @@ def get_board_sprints_details() -> list[dict]:
                 "startDate": getattr(s, "startDate", ""),
                 "endDate": getattr(s, "endDate", ""),
             })
+        log.debug(f"  Returned {len(result)} sprint details")
         return result
-    except Exception:
+    except Exception as e:
+        log.error(f"get_board_sprints_details() FAILED: {e}")
         return []
 
 
 def create_story(epic_key: str, summary: str, description: str,
                  sprint_name: str = "", labels: list = None,
                  assignee_key: str = "", components: list = None,
-                 priority: str = "", acceptance_criteria: str = "") -> str:
-    """Create a user story linked to the epic."""
+                 priority: str = "", acceptance_criteria: str = "",
+                 tag_generated: bool = False) -> str:
+    """Create a user story linked to the epic.
+
+    Args:
+        tag_generated: If True, appends a 'tool-generated' label and a
+            footer line to the description indicating automated creation.
+    """
+    from config import VERSION
     epic_key = _validate_issue_key(epic_key)
+    log.info(f"create_story() epic={epic_key}, summary='{summary[:60]}...'")
+    log.debug(f"  sprint={sprint_name}, labels={labels}, assignee={assignee_key}, "
+              f"components={components}, priority={priority}, tag_generated={tag_generated}")
+    t0 = time.time()
     client = get_client()
+
+    # --- Apply generated-by tagging ---
+    if tag_generated:
+        if labels is None:
+            labels = []
+        if "tool-generated" not in labels:
+            labels.append("tool-generated")
+        footer = (
+            f"\n\n----\n"
+            f"{{color:#999999}}_Generated by Security Heartbeat US Generator (v{VERSION})_{{color}}"
+        )
+        description = (description or "") + footer
+
     fields = {
         "project": {"key": JIRA_PROJECT},
         "issuetype": {"name": STORY_ISSUETYPE},
@@ -277,11 +329,14 @@ def create_story(epic_key: str, summary: str, description: str,
         fields[epic_field] = epic_key
 
     issue = client.create_issue(fields=fields)
+    issue_key = str(issue.key)
+    elapsed = time.time() - t0
+    log.info(f"  Created {issue_key} in {elapsed:.2f}s")
 
     if sprint_name:
-        _move_to_sprint(client, str(issue.key), sprint_name)
+        _move_to_sprint(client, issue_key, sprint_name)
 
-    return str(issue.key)
+    return issue_key
 
 
 def _get_epic_link_field(client) -> str:
@@ -295,10 +350,12 @@ def update_epic_link(issue_key: str, epic_key: str):
     """Update the Epic Link field on an existing story."""
     issue_key = _validate_issue_key(issue_key)
     epic_key = _validate_issue_key(epic_key)
+    log.info(f"update_epic_link() {issue_key} -> epic {epic_key}")
     client = get_client()
     epic_field = _get_epic_link_field(client)
     issue = client.issue(issue_key)
     issue.update(fields={epic_field: epic_key})
+    log.debug(f"  Epic link updated successfully")
 
 
 def update_story(issue_key: str, summary: str, description: str,
@@ -307,6 +364,10 @@ def update_story(issue_key: str, summary: str, description: str,
                  priority: str = "", acceptance_criteria: str = ""):
     """Update an existing user story with new field values."""
     issue_key = _validate_issue_key(issue_key)
+    log.info(f"update_story() key={issue_key}, summary='{summary[:60]}...'")
+    log.debug(f"  sprint={sprint_name}, labels={labels}, assignee={assignee_key}, "
+              f"components={components}, priority={priority}")
+    t0 = time.time()
     client = get_client()
     fields = {
         "summary": summary,
@@ -327,6 +388,8 @@ def update_story(issue_key: str, summary: str, description: str,
 
     issue = client.issue(issue_key)
     issue.update(fields=fields)
+    elapsed = time.time() - t0
+    log.info(f"  Updated {issue_key} in {elapsed:.2f}s")
 
     # Move to sprint if specified
     if sprint_name:
@@ -335,13 +398,13 @@ def update_story(issue_key: str, summary: str, description: str,
 
 def _move_to_sprint(client, issue_key: str, sprint_name: str):
     """Move issue to the sprint with exact name match."""
-    import logging
-    log = logging.getLogger("secheartbeat")
+    log.debug(f"_move_to_sprint({issue_key}, '{sprint_name}')")
     try:
         sprints = client.sprints(BOARD_ID, state="active,future")
         for sprint in sprints:
             if sprint.name.strip().lower() == sprint_name.strip().lower():
                 client.add_issues_to_sprint(sprint.id, [issue_key])
+                log.info(f"  Moved {issue_key} to sprint '{sprint.name}' (id={sprint.id})")
                 return
         log.warning(f"Sprint not found (exact match): '{sprint_name}'. "
                     f"Available: {[s.name for s in sprints]}")

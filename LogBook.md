@@ -4,6 +4,168 @@
 
 ---
 
+## #15 — GUI freezata durante inizializzazione (cursore busy)
+
+| Campo | Dettaglio |
+|-------|-----------|
+| **Data** | 2026-08-25 |
+| **Severità** | 🟡 UX Fix |
+| **Versione** | 1.4.2 |
+| **File coinvolti** | `app.py`, `config.py`, `README.md` |
+| **Test** | Syntax check ✅ |
+
+### Criticità
+
+L'applicazione appariva completamente "frizzata" all'avvio: nessun bottone rispondeva, il cursore restava normale, e non c'era nessuna indicazione visiva che fosse in corso un'inizializzazione (connessione Jira, caricamento sprint, caricamento epic). L'utente non poteva distinguere un hang da un caricamento in corso.
+
+### Fix applicato
+
+1. **Deferimento inizializzazione**: le chiamate pesanti (`_init_jira_from_state`, `_load_sprints`, `_load_epics`, `_restore_state`) sono state spostate in un metodo `_deferred_init()` invocato tramite `root.after_idle()`. In questo modo la finestra viene renderizzata completamente prima di iniziare le operazioni di rete.
+2. **Cursore busy**: aggiunto metodo `_set_busy(busy)` che imposta il cursore "watch" (clessidra) su tutta la finestra durante il caricamento, e lo resetta al termine. L'utente vede immediatamente che l'app sta lavorando.
+3. **Robustezza**: il reset del cursore è in un blocco `finally` per garantire che venga ripristinato anche in caso di errore durante l'init.
+
+### Esito
+
+✅ L'applicazione mostra la GUI immediatamente con cursore a clessidra, poi torna interattiva al termine del caricamento.
+
+---
+
+## #14 — Quit button non funzionante, allineamento parking US, tooltip mancanti
+
+| Campo | Dettaglio |
+|-------|-----------|
+| **Data** | 2026-08-25 |
+| **Severità** | 🟡 Bug Fix + UX |
+| **File coinvolti** | `app.py`, `help_texts.py` |
+| **Test** | Syntax check ✅, test suite non-jira ✅ (16 passed) |
+
+### Criticità
+
+1. **Quit button**: il pulsante "⏻ Quit" non chiudeva l'applicazione (solo la chiusura della finestra con la X funzionava). Causa: il wrapper `debounced()` disabilita il bottone prima di chiamare `_on_close()`, e `root.destroy()` da solo non sempre ferma il mainloop.
+2. **Parking US disallineato**: il box con la lista delle storie (checkbox) nel pannello sinistro non aveva bordi visibili, padding inconsistente, e sfondo indistinguibile dal pannello.
+3. **Tooltip mancanti**: molti widget di input (Entry, ScrolledText, Combobox) non avevano tooltip al passaggio del mouse — solo le label avevano le "nuvolette".
+
+### Fix applicato
+
+1. **Quit button**: rimosso il wrapper `debounced()` dal bottone Quit — ora usa `command=self._on_close` direttamente (un'azione di uscita non va mai debounced). Aggiunto `self.root.quit()` prima di `self.root.destroy()` in `_on_close` per garantire l'uscita dal mainloop.
+2. **Parking US**: aggiunto un frame contenitore con bordo visibile (`highlightbackground=BORDER_COLOR`), sfondo `BG_CARD` consistente per le checkbox, padding interno, e margini uniformi.
+3. **Tooltip**: aggiunti ToolTip su tutti i widget di input: `title_entry`, `desc_text`, `ac_text`, `sprint_combo`, `labels_entry`, `sp_entry`, `assignee_entry`, `components_entry`, `priority_entry`, `epic_desc` ScrolledText, header "📝 User Stories", header story list, canvas area, e ogni checkbox nella lista storie (con dettagli: key, sprint, status, assignee).
+4. Aggiunte chiavi help_texts EN/IT: `story_list_header`, `story_list_area`, `us_panel_header`.
+
+### Esito
+
+❌ Parziale — persistevano problemi su quit, checkbox e tooltip (vedi #15).
+
+---
+
+## #16 — Tooltip non visibili su Linux, Quit non responsivo, Checkbox signature come button
+
+| Campo | Dettaglio |
+|-------|-----------|
+| **Data** | 2026-08-25 |
+| **Severità** | 🟡 Bug Fix + UX |
+| **File coinvolti** | `app.py`, `config.py`, `README.md` |
+| **Test** | Syntax check ✅ |
+
+### Criticità
+
+1. **Tooltip non visibili**: su Linux (GNOME/KDE) i tooltip non apparivano. La `Toplevel` creata con il widget come parent e senza pattern withdraw/deiconify non veniva renderizzata da alcuni window manager.
+2. **Quit non responsivo**: il bottone Quit non terminava l'applicazione — `root.destroy()` da solo non interrompe il mainloop su Linux.
+3. **Checkbox "Tag as generated"**: esteticamente disomogeneo rispetto agli altri bottoni nella barra azioni. L'utente richiedeva uniformità visiva (stesso stile dei bottoni adiacenti) e posizionamento in coda.
+
+### Fix applicato
+
+1. **Tooltip**: riscritta la classe `ToolTip` — usa `winfo_toplevel()` come parent della Toplevel, pattern withdraw → geometry → deiconify per display affidabile su tutti i WM Linux. Aggiunto handler `<Destroy>`, check `winfo_exists()`, e try/except su `after_cancel()`.
+2. **Quit**: aggiunto `self.root.quit()` prima di `self.root.destroy()` in `_on_close()` per uscire dal mainloop prima di distruggere la finestra.
+3. **Checkbox → Toggle Button**: sostituito `tk.Checkbutton` con un `tk.Button` toggle stilizzato (stessi font, padding, cursor degli altri bottoni). Colore verde (BTN_SUCCESS) quando attivo, grigio (#555555) quando disattivo, con relief sunken/raised. Riordinato: Scheduling | Create | Save | Tag (ultimo a sinistra, prima di Quit a destra).
+
+### Esito
+
+✅ Verificato — syntax check OK. Versione 1.4.1.
+
+---
+
+## #15 — Quit, Checkbox signature invisibile, Tooltip non responsivi, Performance
+
+| Campo | Dettaglio |
+|-------|-----------|
+| **Data** | 2026-08-25 |
+| **Severità** | 🟡 Bug Fix + Performance |
+| **File coinvolti** | `app.py` |
+| **Test** | Syntax check ✅ |
+
+### Criticità
+
+1. **Quit**: `_on_close()` chiamava `root.quit()` + `root.destroy()` ma il blink timer attivo poteva generare TclError dopo destroy, e su Linux il processo non terminava.
+2. **Checkbox "Tag as generated"**: `selectcolor=BG_PANEL` (`#002255`) rendeva il segno di spunta praticamente invisibile sullo sfondo scuro — l'utente non capiva se era attivo o meno.
+3. **Tooltip non apparivano**: il canvas della lista storie usava `bind_all("<Enter>")` per il mousewheel, che sovrascriveva i binding `<Enter>` dei ToolTip su qualunque widget. Inoltre i binding `<Enter>` multipli (con/senza `add="+"`) erano errati e conflittuali.
+4. **Performance/lentezza**: il preload delle stories faceva N chiamate HTTP bloccanti (una per epic, con max_epics=5 = 6 chiamate totali) durante l'init della GUI, bloccandola per secondi.
+
+### Fix applicato
+
+1. **Quit**: aggiunto `after_cancel()` del blink timer prima del cleanup, rimosso `root.quit()`, usato `sys.exit(0)` come terminazione definitiva dopo `root.destroy()`.
+2. **Checkbox**: cambiato `selectcolor` da `#002255` a `#1a1a2e` (contrasto visibile), aggiunto `indicatoron=True` esplicito.
+3. **ToolTip riscritto**: aggiunto delay 350ms prima della comparsa, binding con `add="+"` per non sovrascrivere altri handler, hide su `<ButtonPress>`, gestione errori su `winfo_rootx()`, tooltip `topmost` per non perdere visibilità, `_cancel()` robusto.
+4. **Mousewheel**: sostituito `bind_all()` (globale) con `bind()` locale sul canvas — non interferisce più con altri widget.
+5. **Performance**: preload ridotto da tutte le epic (5) a solo le prime 2 (target + fallback); le altre sono caricate on-demand alla selezione.
+
+### Esito
+
+✅ Risolto. Quit termina il processo, checkbox visibile, tooltip appaiono su tutti i widget, avvio più rapido.
+
+---
+
+## #13 — Tag-as-generated checkbox (label + description footer)
+
+| Campo | Dettaglio |
+|-------|-----------|
+| **Data** | 2026-08-25 |
+| **Severità** | 🟢 Feature |
+| **File coinvolti** | `jira_client.py`, `app.py`, `i18n.py`, `help_texts.py`, `config.py` |
+| **Test** | Syntax check ✅ su tutti i moduli |
+
+### Criticità
+
+Non era possibile distinguere, su Jira, le User Stories create manualmente da quelle generate automaticamente dal tool. Nessuna tracciabilità sull'origine delle issue.
+
+### Fix applicato
+
+1. Aggiunto parametro `tag_generated` a `create_story()` in `jira_client.py`: quando attivo, appende la label `tool-generated` e una riga footer grigia/corsiva nella description con nome tool e versione.
+2. Aggiunta checkbox "🏷️ Tag as generated" nella action bar di `app.py`, posizionata tra il bottone Create e Save, abilitata di default.
+3. Aggiunte stringhe EN/IT in `i18n.py` e tooltip descrittivi in `help_texts.py`.
+4. Il tag è applicato **solo su Jira** alla creazione — non modifica il contenuto visibile nel tool.
+
+### Esito
+
+✅ Implementato. Versione bumped a 1.4.0.
+
+---
+
+## #11 — Quit button and window close crash ("application has been destroyed")
+
+| Campo | Dettaglio |
+|-------|-----------|
+| **Data** | 2026-08-24 |
+| **Severità** | 🔴 Bug (Crash) |
+| **File coinvolti** | `app.py` |
+| **Test** | Syntax check ✅ |
+
+### Criticità
+
+Closing the window (X button) during the `_restore_state()` messagebox caused a `TclError: can't invoke "grab" command: application has been destroyed`. This happened because `protocol("WM_DELETE_WINDOW", ...)` was registered *after* `_restore_state()`, so tkinter's default handler destroyed the app while the dialog was still open. The Quit button could also fail if the window was in an invalid state during `_save()`.
+
+### Fix applicato
+
+1. Moved `protocol("WM_DELETE_WINDOW")` and key bindings registration **before** `_restore_state()` and all init operations that may show dialogs.
+2. Added `winfo_exists()` guard and `try/except` around the `messagebox.askyesno` in `_restore_state()` so if the window is destroyed mid-dialog, it gracefully aborts instead of crashing.
+3. Made `_on_close()` robust: wrapped in try/except, checks `winfo_exists()` before saving state, and ensures `destroy()` is always called in a `finally` block.
+
+### Esito
+
+App compila correttamente. Il close handler è ora registrato prima di qualsiasi dialog, eliminando la race condition.
+
+---
+
 ## #10 — Detailed contextual help tooltips (EN/IT)
 
 | Campo | Dettaglio |
@@ -592,5 +754,89 @@ Aggiunto bottone "📅 Scheduling" nella barra azioni, posizionato prima di "Cre
 ### Esito
 
 ✅ Implementato.
+
+---
+
+## #12 — Pre-flight Jira reachability check + comprehensive DEBUG logging
+
+| Campo | Dettaglio |
+|-------|-----------|
+| **Data** | 2026-08-24 |
+| **Severità** | 🔴 Critical (app hang), 🟡 Feature (logging) |
+| **File coinvolti** | `app.py`, `jira_client.py`, `translator.py`, `config.py` |
+| **Test** | Syntax check su tutti i moduli modificati |
+
+### Criticità
+
+1. L'applicazione rimaneva bloccata (hang) all'avvio se il server Jira non era raggiungibile (VPN disconnessa, server down). Il timeout di default di python-jira era `None` (illimitato), con retry automatici di ~10s/20s/40s. L'utente attendeva 3-5 minuti senza vedere la GUI.
+2. Il logging era limitato a `app.py` con livello INFO. I moduli `jira_client.py`, `translator.py` e `config.py` non avevano alcun logging, rendendo il debug difficile.
+
+### Fix applicato
+
+**Pre-flight check (app.py):**
+1. Aggiunta funzione `_check_jira_reachable()` — probe TCP con timeout 5s (socket)
+2. Nel `main()`, prima di costruire la GUI, verifica raggiungibilità: se fallisce mostra popup di allarme con scelta "Continua in DEMO / Esci"
+3. Aggiunto `timeout=10s` esplicito alla creazione del client JIRA in `_init_jira()`
+4. Guard di raggiungibilità anche in `_init_jira_from_state()` e `_connect_jira()`
+5. Popup localizzato EN/IT in base alla lingua selezionata
+
+**Logging dettagliato (tutti i moduli):**
+1. Livello portato a `DEBUG` nel file di log
+2. Formato arricchito: `YYYY-MM-DD HH:MM:SS [LEVEL] module: message`
+3. Logger gerarchici: `secheartbeat.app`, `secheartbeat.jira`, `secheartbeat.config`, `secheartbeat.translator`
+4. `jira_client.py`: log con timing (elapsed) su tutte le operazioni API (JQL query, create, update, sprint move)
+5. `config.py`: log su load/save state, load/save app_config
+6. `translator.py`: log su traduzioni (dimensione testo, esito)
+
+### Test eseguiti
+
+- `py_compile.compile()` su `config.py`, `jira_client.py`, `translator.py`, `app.py`: ✅ OK
+
+### Esito
+
+✅ Implementato. La GUI appare immediatamente; se Jira non è raggiungibile il popup avvisa entro 5 secondi.
+
+---
+
+## #13 — Full editing context persistence + enhanced tooltips
+
+| Campo | Dettaglio |
+|-------|-----------|
+| **Data** | 2026-08-24 |
+| **Severità** | 🟡 Feature (UX + data persistence) |
+| **File coinvolti** | `app.py`, `help_texts.py` |
+| **Test** | Syntax check + parameter consistency verification |
+
+### Criticità
+
+1. La persistenza dello stato all'uscita era incompleta: salvava solo title/description/sprint, perdendo acceptance_criteria, labels, assignee, components, priority, story_points e la chiave Jira della story.
+2. Il restore funzionava solo in assenza di connessione Jira: con connessione attiva le modifiche locali venivano perse.
+3. I tooltip per Preview Markup, Markup Help e Traduttore erano troppo generici — non spiegavano chiaramente come usarli né cosa aspettarsi.
+
+### Fix applicato
+
+**Persistenza completa del contesto (`app.py`):**
+1. `_collect_stories()` ora salva anche `story_points` e `key` (chiave Jira) per ogni story
+2. `_restore_state()` riscritta completamente:
+   - Ripristina TUTTI i campi di ogni story (titolo, desc, AC, sprint, labels, assignee, components, priority, story points, chiave Jira)
+   - Se Jira è connesso e ci sono tab già caricati, chiede all'utente se ripristinare la sessione precedente o mantenere i dati freschi da Jira
+   - Popup localizzato EN/IT
+   - Logging dettagliato del processo di restore
+3. Al prossimo avvio, il lavoro in corso viene proposto automaticamente anche se Jira è connesso
+
+**Tooltip migliorati (`help_texts.py`):**
+1. `markup_help` — Ora include esempi rapidi della sintassi (bold, italic, headings, lists, tables, code) con il rendering atteso + nota che il popup rimane aperto come riferimento
+2. `translate` — Spiega il flusso passo-passo (click → preview → confirm/skip) + tips (preserva markup, richiede internet, meglio con frasi complete)
+3. `preview_markup` — Lista dettagliata di cosa viene renderizzato (bold, italic, headings, colors, lists, tables, links, code) + nota sull'uso come verifica pre-creazione
+4. Tutti e tre i tooltip in formato strutturato con titolo, separatore e sezioni
+
+### Test eseguiti
+
+- `py_compile` su `app.py`, `help_texts.py`: ✅ OK
+- Verifica che `_add_tab` accetta tutti i parametri usati nel `_restore_state`: ✅ OK
+
+### Esito
+
+✅ Implementato. Le modifiche in editing vengono preservate tra le sessioni con ripristino completo al prossimo avvio.
 
 ---

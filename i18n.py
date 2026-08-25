@@ -24,6 +24,7 @@ STRINGS = {
         "translate": "🌐 Translate to EN",
         "save": "💾 Save",
         "load_stories": "📥 Load Stories",
+        "tag_generated": "🏷️ Tag as generated",
     },
     "it": {
         "title": "Generatore US Security Heartbeat",
@@ -48,6 +49,7 @@ STRINGS = {
         "translate": "🌐 Traduci in EN",
         "save": "💾 Salva",
         "load_stories": "📥 Carica Storie",
+        "tag_generated": "🏷️ Marca come generata",
     },
 }
 

@@ -199,6 +199,41 @@ def build_pdf():
         ListItem(Paragraph("Un Personal Access Token (PAT) Jira", styles['Body'])),
     ], bulletType='bullet', start='•'))
 
+    story.append(Paragraph("<b>Dipendenze di sistema (Ubuntu/Debian):</b>", styles['H2']))
+    story.append(Paragraph(
+        "L'applicazione utilizza librerie Python che richiedono pacchetti di sistema "
+        "non sempre preinstallati. Su Ubuntu/Debian è necessario installarli prima di "
+        "procedere con <font name='Courier'>pip install</font>:", styles['Body']))
+    story.append(Spacer(1, 3*mm))
+
+    deps_data = [
+        [Paragraph("<b>Pacchetto</b>", styles['TableHeader']),
+         Paragraph("<b>Necessario per</b>", styles['TableHeader'])],
+        ["python3-tk", "GUI dell'applicazione (tkinter non è incluso in tutte le installazioni Python)"],
+        ["libcairo2-dev", "Rendering SVG → PNG (logo Ericsson) tramite cairosvg"],
+        ["libffi-dev", "Compilazione estensioni native richieste da cairosvg"],
+        ["python3-dev", "Headers Python per compilare Pillow e cairosvg"],
+    ]
+    deps_table = Table(deps_data, colWidths=[4*cm, 12*cm])
+    deps_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), ERICSSON_BLUE),
+        ('TEXTCOLOR', (0, 0), (-1, 0), white),
+        ('GRID', (0, 0), (-1, -1), 0.5, HexColor("#cccccc")),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [white, LIGHT_BG]),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 5),
+    ]))
+    story.append(deps_table)
+    story.append(Spacer(1, 3*mm))
+    story.append(Paragraph(
+        "sudo apt install python3-tk libcairo2-dev libffi-dev python3-dev", styles['CodeBlock']))
+    story.append(Paragraph(
+        "<i>Nota: sulle workstation Ericsson preconfigurate questi pacchetti sono generalmente già presenti. "
+        "Verificare solo in caso di errore durante l'installazione delle dipendenze Python.</i>",
+        styles['Note']))
+    story.append(Spacer(1, 5*mm))
+
     story.append(Paragraph("<b>Installazione:</b>", styles['H2']))
     story.append(Paragraph("git clone https://github.com/MarcoIppo/SecurityHeartbeat.git", styles['CodeBlock']))
     story.append(Paragraph("cd SecurityHeartbeat", styles['CodeBlock']))

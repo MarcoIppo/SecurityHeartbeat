@@ -58,6 +58,18 @@ _EN = {
         "⏻ QUIT — Saves the current application state (selected epic, token, stories) "
         "and exits. State is automatically restored on next launch. Shortcut: Ctrl+Q"
     ),
+    "tag_generated": (
+        "🏷️ TAG AS GENERATED\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "When enabled, each created User Story will include:\n\n"
+        "  • A 'tool-generated' label — allows filtering in Jira\n"
+        "    (JQL: labels = tool-generated)\n"
+        "  • A small footer line at the bottom of the description\n"
+        "    indicating the tool name and version that generated it\n\n"
+        "This does NOT affect the story content displayed in this tool —\n"
+        "the tag is only visible on Jira after creation.\n\n"
+        "Disable this if you prefer clean stories with no automation trace."
+    ),
     "history": (
         "📋 HISTORY — Shows the application version history and changelog. "
         "Each entry lists new features, bug fixes, and improvements."
@@ -115,17 +127,49 @@ _EN = {
         "If empty, Jira uses the project default."
     ),
     "markup_help": (
-        "❓ MARKUP — Opens a popup with the full Jira/Confluence wiki markup reference. "
-        "Covers: bold, italic, headings, lists, links, code blocks, tables, and more."
+        "❓ MARKUP REFERENCE\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Opens a cheat-sheet popup with the full Jira/Confluence wiki markup syntax.\n\n"
+        "Quick examples:\n"
+        "  *bold text*         → bold text\n"
+        "  _italic text_       → italic text\n"
+        "  h2. Section title   → heading\n"
+        "  * bullet item       → bullet list\n"
+        "  # numbered item     → numbered list\n"
+        "  {code}...{code}     → code block\n"
+        "  ||col1||col2||      → table header\n"
+        "  |val1 |val2 |       → table row\n\n"
+        "Use these in Description and Acceptance Criteria fields.\n"
+        "The popup stays open while you type — use it as a reference."
     ),
     "translate": (
-        "🌐 TRANSLATE (IT→EN) — Translates the entire field content from Italian to English via Google Translate. "
-        "Opens a preview popup: Confirm replaces all text with the translation, Skip keeps the original. "
-        "Review the translation before confirming — automated translations may need adjustments."
+        "🌐 TRANSLATE (IT → EN)\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Translates the field content from Italian to English using Google Translate.\n\n"
+        "How it works:\n"
+        "  1. Click this button\n"
+        "  2. A preview popup shows the translated text\n"
+        "  3. 'Confirm' → replaces the field with the translation\n"
+        "     'Skip'    → keeps the original text unchanged\n\n"
+        "⚠️  Tips:\n"
+        "  • Review the translation — automatic translations may have errors\n"
+        "  • Jira markup (*bold*, _italic_, etc.) is preserved\n"
+        "  • Works best with complete sentences, not single words\n"
+        "  • Requires internet connection"
     ),
     "preview_markup": (
-        "👁 PREVIEW — Opens a popup showing how the Jira markup will be rendered. "
-        "Displays bold, italic, headings, colors, lists, tables, and links as they would appear in Jira."
+        "👁 PREVIEW RENDERED MARKUP\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Opens a popup showing how the Jira wiki markup will be rendered.\n\n"
+        "Displays formatted output:\n"
+        "  • *bold* → bold   |  _italic_ → italic\n"
+        "  • h1./h2./h3. → headings with sizes\n"
+        "  • {color:red}text{color} → colored text\n"
+        "  • * / # → bullet and numbered lists\n"
+        "  • ||header|| / |cell| → formatted tables\n"
+        "  • [link text|URL] → clickable links\n"
+        "  • {code}...{code} → monospace code block\n\n"
+        "Use this to verify your markup is correct before creating the story on Jira."
     ),
     "split_story": (
         "⊕ SPLIT — Duplicates this story into a new tab with the same description. "
@@ -143,8 +187,23 @@ _EN = {
     ),
     "indicator": "● = Connected to Jira (live data) | ○ = Not connected (showing cached data). Color: green = OK, yellow blink = loading, red = error.",
     "add_to_epic": (
-        "➕ ADD TO EPIC — Clones selected stories from the older epic and links them "
-        "to the target (latest) epic. Existing stories are re-linked, templates are created as new."
+        "➕ ADD TO EPIC — Clones the selected stories from the older epic and creates them "
+        "as NEW stories linked to the target (latest) epic. The original stories remain "
+        "unchanged in their old epic — nothing is moved or re-linked."
+    ),
+    "story_list_header": (
+        "📋 STORY LIST — Shows all User Stories linked to the selected epic. "
+        "Check the stories you want to include in batch operations (Create, Save). "
+        "Click a story to navigate to its editing tab on the right."
+    ),
+    "story_list_area": (
+        "Scroll to browse all stories. Check/uncheck to select stories for batch operations. "
+        "Click a story name to navigate to its editing tab."
+    ),
+    "us_panel_header": (
+        "📝 USER STORIES PANEL — Editing area for User Stories. "
+        "Each tab represents a story to be created or updated on Jira. "
+        "Fill in all fields, then use 'Create/Update' to push to Jira."
     ),
 }
 
@@ -197,6 +256,18 @@ _IT = {
     "quit": (
         "⏻ ESCI — Salva lo stato corrente (epica selezionata, token, stories) "
         "e chiude l'applicazione. Lo stato viene ripristinato al prossimo avvio. Scorciatoia: Ctrl+Q"
+    ),
+    "tag_generated": (
+        "🏷️ MARCA COME GENERATA\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Quando abilitata, ogni User Story creata includerà:\n\n"
+        "  • Una label 'tool-generated' — permette filtri in Jira\n"
+        "    (JQL: labels = tool-generated)\n"
+        "  • Una riga a piè di pagina nella descrizione che indica\n"
+        "    il nome del tool e la versione che l'ha generata\n\n"
+        "Questo NON modifica il contenuto visibile in questo tool —\n"
+        "il tag è visibile solo su Jira dopo la creazione.\n\n"
+        "Disabilita se preferisci stories pulite senza traccia di automazione."
     ),
     "history": (
         "📋 CRONOLOGIA — Mostra la cronologia delle versioni e il changelog. "
@@ -255,17 +326,49 @@ _IT = {
         "Se vuoto, Jira usa il default del progetto."
     ),
     "markup_help": (
-        "❓ MARKUP — Apre un popup con il riferimento completo al wiki markup Jira/Confluence. "
-        "Include: grassetto, corsivo, titoli, liste, link, blocchi codice, tabelle."
+        "❓ RIFERIMENTO MARKUP\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Apre un popup con la sintassi completa del wiki markup Jira/Confluence.\n\n"
+        "Esempi rapidi:\n"
+        "  *testo grassetto*   → testo grassetto\n"
+        "  _testo corsivo_     → testo corsivo\n"
+        "  h2. Titolo sezione  → intestazione\n"
+        "  * elemento          → lista puntata\n"
+        "  # elemento          → lista numerata\n"
+        "  {code}...{code}     → blocco codice\n"
+        "  ||col1||col2||      → intestazione tabella\n"
+        "  |val1 |val2 |       → riga tabella\n\n"
+        "Usa questi formati nei campi Descrizione e Criteri di Accettazione.\n"
+        "Il popup rimane aperto mentre scrivi — usalo come riferimento."
     ),
     "translate": (
-        "🌐 TRADUCI (IT→EN) — Traduce l'intero contenuto del campo dall'italiano all'inglese via Google Translate. "
-        "Un popup di anteprima permette di Confermare (sostituisce tutto il testo) o Saltare (mantiene l'originale). "
-        "Verifica la traduzione prima di confermare — le traduzioni automatiche possono richiedere aggiustamenti."
+        "🌐 TRADUCI (IT → EN)\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Traduce il contenuto del campo dall'italiano all'inglese tramite Google Translate.\n\n"
+        "Come funziona:\n"
+        "  1. Clicca questo pulsante\n"
+        "  2. Un popup mostra l'anteprima della traduzione\n"
+        "  3. 'Conferma' → sostituisce il campo con la traduzione\n"
+        "     'Salta'    → mantiene il testo originale invariato\n\n"
+        "⚠️  Suggerimenti:\n"
+        "  • Controlla la traduzione — le traduzioni automatiche possono avere errori\n"
+        "  • Il markup Jira (*grassetto*, _corsivo_, ecc.) viene preservato\n"
+        "  • Funziona meglio con frasi complete, non singole parole\n"
+        "  • Richiede connessione internet"
     ),
     "preview_markup": (
-        "👁 ANTEPRIMA — Apre un popup con il rendering del markup Jira. "
-        "Mostra grassetto, corsivo, titoli, colori, liste, tabelle e link come apparirebbero in Jira."
+        "👁 ANTEPRIMA MARKUP RENDERIZZATO\n"
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        "Apre un popup che mostra come il markup Jira verrà visualizzato.\n\n"
+        "Mostra il formato renderizzato:\n"
+        "  • *grassetto* → grassetto  |  _corsivo_ → corsivo\n"
+        "  • h1./h2./h3. → intestazioni con dimensioni\n"
+        "  • {color:red}testo{color} → testo colorato\n"
+        "  • * / # → liste puntate e numerate\n"
+        "  • ||intestazione|| / |cella| → tabelle formattate\n"
+        "  • [testo link|URL] → link cliccabili\n"
+        "  • {code}...{code} → blocco codice monospace\n\n"
+        "Usa questa funzione per verificare che il markup sia corretto prima di creare la story su Jira."
     ),
     "split_story": (
         "⊕ DIVIDI — Duplica questa story in un nuovo tab con lo stesso contenuto. "
@@ -284,6 +387,21 @@ _IT = {
     "indicator": "● = Connesso a Jira (dati live) | ○ = Non connesso (dati dalla cache). Colore: verde = OK, giallo lampeggiante = caricamento, rosso = errore.",
     "add_to_epic": (
         "➕ AGGIUNGI ALL'EPICA — Clona le stories selezionate dalla vecchia epica "
-        "e le collega all'epica target (più recente). Le esistenti vengono re-linkate, i template creati come nuovi."
+        "e le crea come NUOVE storie collegate all'epica target (più recente). Le storie "
+        "originali restano invariate nella vecchia epica — nulla viene spostato o re-linkato."
+    ),
+    "story_list_header": (
+        "📋 LISTA STORIE — Mostra tutte le User Stories collegate all'epica selezionata. "
+        "Spunta le storie da includere nelle operazioni batch (Crea, Salva). "
+        "Clicca una storia per navigare al suo tab di editing a destra."
+    ),
+    "story_list_area": (
+        "Scorri per sfogliare tutte le storie. Spunta/deseleziona per scegliere le storie per le operazioni batch. "
+        "Clicca il nome di una storia per navigare al suo tab di editing."
+    ),
+    "us_panel_header": (
+        "📝 PANNELLO USER STORIES — Area di editing per le User Stories. "
+        "Ogni tab rappresenta una storia da creare o aggiornare su Jira. "
+        "Compila tutti i campi, poi usa 'Crea/Aggiorna' per inviarle a Jira."
     ),
 }

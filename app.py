@@ -35,10 +35,11 @@ if "-h" in sys.argv or "--help" in sys.argv:
 LOG_FILE = Path(__file__).parent / "securityHeartbeatGenerator.log"
 LOG_FILE.write_text("")  # clear on launch
 logging.basicConfig(
-    filename=str(LOG_FILE), level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S"
+    filename=str(LOG_FILE), level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)-5s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
 )
-log = logging.getLogger("secheartbeat")
+log = logging.getLogger("secheartbeat.app")
 
 # Log app configuration header
 from config import JIRA_PROJECT, BOARD_ID, MAX_EPICS, EPIC_NAME_PATTERN
@@ -58,26 +59,60 @@ log.info("=" * 60)
 
 
 class ToolTip:
-    """Simple tooltip on hover for tkinter widgets."""
+    """Simple tooltip on hover for tkinter widgets.
+
+    Works reliably on Linux (GNOME/KDE/Xfce) by using the root window
+    as Toplevel parent and forcing geometry updates before display.
+    """
+    _DELAY_MS = 400  # delay before showing tooltip
+
     def __init__(self, widget, text):
         self.widget = widget
         self.text = text
         self.tip = None
-        widget.bind("<Enter>", self._show)
-        widget.bind("<Leave>", self._hide)
+        self._after_id = None
+        widget.bind("<Enter>", self._schedule, add="+")
+        widget.bind("<Leave>", self._hide, add="+")
+        widget.bind("<ButtonPress>", self._hide, add="+")
+        # Also hide if widget is destroyed
+        widget.bind("<Destroy>", self._hide, add="+")
+
+    def _schedule(self, event=None):
+        self._cancel()
+        self._after_id = self.widget.after(self._DELAY_MS, self._show)
+
+    def _cancel(self):
+        if self._after_id:
+            try:
+                self.widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
 
     def _show(self, event=None):
-        x = self.widget.winfo_rootx() + 20
-        y = self.widget.winfo_rooty() + self.widget.winfo_height() + 2
-        self.tip = tk.Toplevel(self.widget)
+        self._after_id = None
+        if self.tip:
+            return
+        try:
+            if not self.widget.winfo_exists():
+                return
+            x = self.widget.winfo_rootx() + 20
+            y = self.widget.winfo_rooty() + self.widget.winfo_height() + 2
+        except Exception:
+            return
+        # Use winfo_toplevel() as parent for reliable display on Linux
+        self.tip = tk.Toplevel(self.widget.winfo_toplevel())
         self.tip.wm_overrideredirect(True)
+        # Withdraw first, position, then show — avoids flicker on Linux WMs
+        self.tip.withdraw()
         self.tip.wm_geometry(f"+{x}+{y}")
+        self.tip.wm_attributes("-topmost", True)
         lbl = tk.Label(self.tip, text=self.text, font=("Segoe UI", 9),
                        bg="#1e1e2e", fg="#e0e0e0", padx=12, pady=8,
                        wraplength=480, justify="left",
                        highlightbackground="#444466", highlightthickness=1)
         lbl.pack()
-        # Ensure tooltip stays within screen bounds
+        # Force geometry computation then reposition within screen
         self.tip.update_idletasks()
         sw = self.tip.winfo_screenwidth()
         sh = self.tip.winfo_screenheight()
@@ -88,10 +123,15 @@ class ToolTip:
         if y + th > sh:
             y = self.widget.winfo_rooty() - th - 2
         self.tip.wm_geometry(f"+{x}+{y}")
+        self.tip.deiconify()  # now show it
 
     def _hide(self, event=None):
+        self._cancel()
         if self.tip:
-            self.tip.destroy()
+            try:
+                self.tip.destroy()
+            except Exception:
+                pass
             self.tip = None
 
 LANG = "it" if "--ita" in sys.argv else "en"
@@ -180,6 +220,33 @@ JIRA_MARKUP_HELP = (
 # Check Jira availability - deferred to after GUI init
 JIRA_AVAILABLE = False
 
+# Connection timeout for Jira operations (seconds)
+JIRA_CONNECT_TIMEOUT = 10
+
+
+def _check_jira_reachable(url: str, timeout: float = 5.0) -> bool:
+    """Quick TCP check to verify Jira server is reachable (no auth needed).
+
+    Returns True if a TCP connection to the server can be established
+    within the given timeout. This avoids the long default timeout of
+    python-jira/urllib3 which can block the GUI for minutes.
+    """
+    if not url:
+        return False
+    import socket
+    from urllib.parse import urlparse
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        sock = socket.create_connection((host, port), timeout=timeout)
+        sock.close()
+        log.info(f"Jira server reachable: {host}:{port}")
+        return True
+    except (socket.timeout, socket.error, OSError) as e:
+        log.warning(f"Jira server NOT reachable: {e}")
+        return False
+
 
 def _init_jira(url, user, token):
     global JIRA_AVAILABLE
@@ -189,7 +256,7 @@ def _init_jira(url, user, token):
             config.JIRA_URL = url
             config.JIRA_TOKEN = token
             from jira import JIRA
-            client = JIRA(server=url, token_auth=token)
+            client = JIRA(server=url, token_auth=token, timeout=JIRA_CONNECT_TIMEOUT)
             client.myself()
             JIRA_AVAILABLE = True
             log.info("Jira connection established")
@@ -230,16 +297,32 @@ class SecurityHeartbeatApp:
         self._build_credentials_panel()
         self._build_status_bar()
 
-        self._init_jira_from_state()
-        self._load_sprints()
-        self._load_epics()
-        self._restore_state()
-
-        log.info("Application started")
-
+        # Register window close handler BEFORE any operation that may show dialogs
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.bind("<Control-s>", lambda e: self._save())
         self.root.bind("<Control-q>", lambda e: self._on_close())
+
+        # Show busy cursor during initialization — deferred so the GUI renders first
+        self._set_busy(True)
+        self.root.after_idle(self._deferred_init)
+
+    def _deferred_init(self):
+        """Run heavy initialization (Jira connection, sprints, epics) after the GUI is visible."""
+        try:
+            self._init_jira_from_state()
+            self._load_sprints()
+            self._load_epics()
+            self._restore_state()
+            log.info("Application started")
+        finally:
+            self._set_busy(False)
+
+    def _set_busy(self, busy: bool):
+        """Set or clear the busy (watch) cursor on the entire application."""
+        cursor = "watch" if busy else ""
+        self.root.config(cursor=cursor)
+        # Force visual update so the cursor change is immediate
+        self.root.update_idletasks()
 
     def _setup_style(self):
         style = ttk.Style()
@@ -361,6 +444,7 @@ class SecurityHeartbeatApp:
                                                     bg="#2a2a2a", fg="#aaaaaa", insertbackground=FG_TEXT,
                                                     bd=0, wrap="word")
         self.epic_desc.pack(fill="x", padx=10, pady=(0, 10))
+        ToolTip(self.epic_desc, H["epic_desc"])
 
         # Separator
         tk.Frame(parent, bg=BORDER_COLOR, height=1).pack(fill="x", padx=10, pady=5)
@@ -368,34 +452,55 @@ class SecurityHeartbeatApp:
         # Stories header with count
         stories_header = tk.Frame(parent, bg=BG_PANEL)
         stories_header.pack(fill="x", padx=10, pady=(5, 2))
-        tk.Label(stories_header, text=S["historical_stories"], font=("Segoe UI", 10, "bold"),
-                 fg=FG_TEXT, bg=BG_PANEL).pack(side="left")
+        lbl_stories_hdr = tk.Label(stories_header, text=S["historical_stories"], font=("Segoe UI", 10, "bold"),
+                 fg=FG_TEXT, bg=BG_PANEL)
+        lbl_stories_hdr.pack(side="left")
+        ToolTip(lbl_stories_hdr, H.get("story_list_header",
+                "List of User Stories associated with the selected epic. "
+                "Check the stories you want to include in batch operations."))
         self.stories_count_lbl = tk.Label(stories_header, text="(0)", font=("Segoe UI", 9),
                                            fg="#aaaaaa", bg=BG_PANEL)
         self.stories_count_lbl.pack(side="left", padx=5)
 
-        self.stories_frame = tk.Frame(parent, bg=BG_PANEL)
+        # Stories list container with visible border
+        stories_container = tk.Frame(parent, bg=BG_CARD,
+                                     highlightbackground=BORDER_COLOR, highlightthickness=1)
+        stories_container.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+
+        self.stories_frame = tk.Frame(stories_container, bg=BG_CARD)
+        self.stories_frame.pack(fill="both", expand=True, padx=2, pady=2)
         # Add scrollbar
-        canvas = tk.Canvas(self.stories_frame, bg=BG_PANEL, highlightthickness=0)
+        canvas = tk.Canvas(self.stories_frame, bg=BG_CARD, highlightthickness=0)
         scrollbar = ttk.Scrollbar(self.stories_frame, orient="vertical", command=canvas.yview)
-        self.stories_inner = tk.Frame(canvas, bg=BG_PANEL)
+        self.stories_inner = tk.Frame(canvas, bg=BG_CARD)
         self.stories_inner.bind("<Configure>",
                                 lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.create_window((0, 0), window=self.stories_inner, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
-        # Mousewheel scroll
-        canvas.bind("<Enter>", lambda e: canvas.bind_all("<MouseWheel>",
-                    lambda ev: canvas.yview_scroll(-1 * (ev.delta // 120), "units")))
-        canvas.bind("<Leave>", lambda e: canvas.unbind_all("<MouseWheel>"))
-        canvas.bind("<Enter>", lambda e: canvas.bind_all("<Button-4>",
-                    lambda ev: canvas.yview_scroll(-1, "units")), add="+")
-        canvas.bind("<Enter>", lambda e: canvas.bind_all("<Button-5>",
-                    lambda ev: canvas.yview_scroll(1, "units")), add="+")
-        canvas.bind("<Leave>", lambda e: (canvas.unbind_all("<Button-4>"),
-                    canvas.unbind_all("<Button-5>")), add="+")
+        # Mousewheel scroll — use tag-based binding to avoid global event interference
+        self._stories_canvas = canvas
+
+        def _on_canvas_enter(e):
+            if sys.platform == "linux":
+                canvas.bind("<Button-4>", lambda ev: canvas.yview_scroll(-1, "units"))
+                canvas.bind("<Button-5>", lambda ev: canvas.yview_scroll(1, "units"))
+            else:
+                canvas.bind("<MouseWheel>",
+                            lambda ev: canvas.yview_scroll(-1 * (ev.delta // 120), "units"))
+
+        def _on_canvas_leave(e):
+            if sys.platform == "linux":
+                canvas.unbind("<Button-4>")
+                canvas.unbind("<Button-5>")
+            else:
+                canvas.unbind("<MouseWheel>")
+
+        canvas.bind("<Enter>", _on_canvas_enter)
+        canvas.bind("<Leave>", _on_canvas_leave)
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
-        self.stories_frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+        ToolTip(canvas, H.get("story_list_area",
+                "Scroll to browse all stories. Check/uncheck to select stories for batch operations."))
 
         # Buttons row
         btn_frame = tk.Frame(parent, bg=BG_PANEL)
@@ -411,8 +516,11 @@ class SecurityHeartbeatApp:
         # Tab area header
         header = tk.Frame(parent, bg=BG_DARK)
         header.pack(fill="x", pady=(0, 5))
-        tk.Label(header, text="📝 User Stories", font=("Segoe UI", 12, "bold"),
-                 fg=FG_TITLE, bg=BG_DARK).pack(side="left")
+        lbl_us_header = tk.Label(header, text="📝 User Stories", font=("Segoe UI", 12, "bold"),
+                 fg=FG_TITLE, bg=BG_DARK)
+        lbl_us_header.pack(side="left")
+        ToolTip(lbl_us_header, H.get("us_panel_header",
+                "Editing area for User Stories. Each tab represents a story to be created or updated on Jira."))
 
         # Notebook for story tabs
         self.notebook = ttk.Notebook(parent)
@@ -430,7 +538,22 @@ class SecurityHeartbeatApp:
         btn_save = self._make_btn(actions, "💾 Save US", BTN_SUCCESS, self._save_stories_to_file)
         btn_save.pack(side="left", padx=5)
         ToolTip(btn_save, H["save_us"])
-        btn_quit = self._make_btn(actions, "⏻ Quit", BTN_DANGER, self._on_close)
+        # Tag-as-generated toggle button (styled like neighboring buttons)
+        self.tag_generated_var = tk.BooleanVar(value=True)
+        self._btn_tag = tk.Button(actions, text=S["tag_generated"],
+                                  font=("Segoe UI", 9, "bold"),
+                                  bg=BTN_SUCCESS, fg="white",
+                                  activebackground=BTN_SUCCESS,
+                                  activeforeground="white", bd=0,
+                                  padx=12, pady=4, cursor="hand2",
+                                  command=self._toggle_tag_generated)
+        self._btn_tag.pack(side="left", padx=5)
+        self._update_tag_btn_style()
+        ToolTip(self._btn_tag, H["tag_generated"])
+        btn_quit = tk.Button(actions, text="⏻ Quit", font=("Segoe UI", 9, "bold"),
+                             bg=BTN_DANGER, fg="white", activebackground=BTN_DANGER,
+                             activeforeground="white", bd=0, padx=12, pady=4,
+                             cursor="hand2", command=self._on_close)
         btn_quit.pack(side="right")
         ToolTip(btn_quit, H["quit"])
         btn_hist = self._make_btn(actions, S["history"], BTN_INFO, self._show_history)
@@ -494,9 +617,21 @@ class SecurityHeartbeatApp:
             self.cred_token.insert(0, JIRA_TOKEN)
 
     def _init_jira_from_state(self):
-        """Try to initialize Jira from saved token or env var."""
+        """Try to initialize Jira from saved token or env var.
+
+        Skips the heavy connection attempt if the server is not reachable
+        (pre-check already done in main, but also guards against slow init).
+        """
         state = load_state()
         token = state.get("jira_token", "") or JIRA_TOKEN
+        if not token or not JIRA_URL:
+            self._indicator_set("disconnected")
+            return
+        # Quick reachability check (avoids long blocking if server is down)
+        if not _check_jira_reachable(JIRA_URL, timeout=5.0):
+            log.warning("Jira unreachable during init — starting in DEMO mode")
+            self._indicator_set("disconnected")
+            return
         if _init_jira(JIRA_URL, "", token):
             self._indicator_set("connected")
         else:
@@ -511,6 +646,11 @@ class SecurityHeartbeatApp:
         from config import JIRA_URL
         if not JIRA_URL:
             self._set_status("⚠ jira_url not set in app_config.json")
+            return
+        # Quick reachability check before heavy connection attempt
+        if not _check_jira_reachable(JIRA_URL, timeout=5.0):
+            self._set_status("✗ Jira server unreachable — check VPN/network")
+            self._indicator_set("disconnected")
             return
         if _init_jira(JIRA_URL, "", token):
             self._indicator_set("connected")
@@ -554,6 +694,21 @@ class SecurityHeartbeatApp:
                         activeforeground="white", bd=0, padx=12, pady=4,
                         cursor="hand2", command=debounced)
         return btn
+
+    def _toggle_tag_generated(self):
+        """Toggle the tag-as-generated flag and update button appearance."""
+        current = self.tag_generated_var.get()
+        self.tag_generated_var.set(not current)
+        self._update_tag_btn_style()
+
+    def _update_tag_btn_style(self):
+        """Update tag button color based on ON/OFF state."""
+        if self.tag_generated_var.get():
+            self._btn_tag.config(bg=BTN_SUCCESS, activebackground=BTN_SUCCESS,
+                                 relief="sunken")
+        else:
+            self._btn_tag.config(bg="#555555", activebackground="#555555",
+                                 relief="raised")
 
     # --- Indicator ---
 
@@ -646,11 +801,12 @@ class SecurityHeartbeatApp:
             self.epic_combo.insert("end", f"{icon} [{e['key']}] {e['summary']}")
         self.epic_count_lbl.config(text=f"Epics: {len(self.epics)}")
 
-        # Preload stories count per epic to determine source epic
+        # Preload stories only for the first (target) epic — others loaded on demand
         self._epic_stories_cache = {}
         if JIRA_AVAILABLE and self.epics:
             import jira_client
-            for e in self.epics:
+            # Only preload first two epics (target + fallback source)
+            for e in self.epics[:2]:
                 try:
                     stories = jira_client.get_epic_stories(e["key"])
                     self._epic_stories_cache[e["key"]] = stories
@@ -742,6 +898,16 @@ class SecurityHeartbeatApp:
         is_old_epic = False  # stories come from an older epic (not the target)
 
         if JIRA_AVAILABLE:
+            # Load stories on-demand if not cached
+            if selected_key not in self._epic_stories_cache:
+                try:
+                    import jira_client
+                    self._epic_stories_cache[selected_key] = jira_client.get_epic_stories(selected_key)
+                    log.info(f"  On-demand load: {selected_key} → {len(self._epic_stories_cache[selected_key])} stories")
+                except Exception as ex:
+                    log.error(f"  On-demand load failed for {selected_key}: {ex}")
+                    self._epic_stories_cache[selected_key] = []
+
             # If selecting the target (latest) epic
             if selected_idx == 0:
                 target_stories = self._epic_stories_cache.get(selected_key, [])
@@ -750,6 +916,13 @@ class SecurityHeartbeatApp:
                 elif source_idx >= 0:
                     # Latest has no stories, use source as template
                     source_key = self.epics[source_idx]["key"]
+                    # Also load source on-demand if needed
+                    if source_key not in self._epic_stories_cache:
+                        try:
+                            import jira_client
+                            self._epic_stories_cache[source_key] = jira_client.get_epic_stories(source_key)
+                        except Exception:
+                            self._epic_stories_cache[source_key] = []
                     stories = self._epic_stories_cache.get(source_key, [])
                     from_template = True
                     is_old_epic = True
@@ -781,12 +954,22 @@ class SecurityHeartbeatApp:
             # Stories from old epics are unchecked by default
             var = tk.BooleanVar(value=not is_old_epic)
             cb = tk.Checkbutton(self.stories_inner, text=f"[{s.get('key', 'NEW')}] {s['summary']}",
-                                variable=var, bg=BG_PANEL, fg=FG_TEXT,
-                                selectcolor=BG_CARD, activebackground=BG_PANEL,
+                                variable=var, bg=BG_CARD, fg=FG_TEXT,
+                                selectcolor=BG_CARD, activebackground=BG_CARD,
                                 activeforeground=FG_ACCENT, font=("Segoe UI", 8),
                                 anchor="w", wraplength=320,
                                 command=lambda idx=i: self._select_tab_by_index(idx))
-            cb.pack(fill="x", anchor="w", pady=1)
+            cb.pack(fill="x", anchor="w", pady=1, padx=4)
+            # Tooltip with story details
+            tip_text = f"{s.get('key', 'NEW')} — {s['summary']}"
+            if s.get("sprint"):
+                tip_text += f"\nSprint: {s['sprint']}"
+            if s.get("status"):
+                tip_text += f"\nStatus: {s['status']}"
+            if s.get("assignee"):
+                tip_text += f"\nAssignee: {s['assignee']}"
+            tip_text += "\n\nClick to navigate to this story tab."
+            ToolTip(cb, tip_text)
             self.story_checkboxes.append((var, s))
 
         # Create tabs from stories
@@ -869,7 +1052,11 @@ class SecurityHeartbeatApp:
         ToolTip(self._add_to_epic_btn, H["add_to_epic"])
 
     def _add_stories_to_epic(self, target_epic):
-        """Clone selected stories from old epic and create them under the target epic."""
+        """Clone selected stories from old epic and create them as NEW stories under the target epic.
+
+        Always creates new stories — never re-links existing ones. The original
+        stories remain untouched in their current epic.
+        """
         if not JIRA_AVAILABLE:
             messagebox.showerror("Error", "Jira not available.")
             return
@@ -879,33 +1066,27 @@ class SecurityHeartbeatApp:
             messagebox.showwarning("No Selection", "Select at least one story to add.")
             return
 
-        msg = f"Clone {len(selected)} stories to epic {target_epic['key']}?"
+        msg = f"Clone {len(selected)} stories to epic {target_epic['key']}?\n\nNew stories will be created — originals remain unchanged."
+        if LANG == "it":
+            msg = f"Clonare {len(selected)} storie nell'epica {target_epic['key']}?\n\nVerranno create nuove storie — le originali restano invariate."
         if not messagebox.askyesno("Confirm", msg):
             return
 
         log.info(f"Cloning {len(selected)} stories to {target_epic['key']}")
         import jira_client
         created = []
-        relinked = []
         errors = []
         for _, s in selected:
             try:
-                if s.get("key") and s.get("epic_link") != target_epic["key"]:
-                    # Existing story from old epic — update its epic link
-                    jira_client.update_epic_link(s["key"], target_epic["key"])
-                    relinked.append(s["key"])
-                    log.info(f"  Re-linked {s['key']} to {target_epic['key']}")
-                else:
-                    # No key (template) — create new story
-                    desc = s.get("description", "")
-                    ac = s.get("acceptance_criteria", "")
-                    key = jira_client.create_story(
-                        target_epic["key"], s["summary"], desc,
-                        s.get("sprint", ""), s.get("labels"),
-                        s.get("assignee_key", ""), s.get("components"),
-                        s.get("priority", ""), ac)
-                    created.append(key)
-                    log.info(f"  Created {key}: {s['summary']}")
+                desc = s.get("description", "")
+                ac = s.get("acceptance_criteria", "")
+                key = jira_client.create_story(
+                    target_epic["key"], s["summary"], desc,
+                    s.get("sprint", ""), s.get("labels"),
+                    s.get("assignee_key", ""), s.get("components"),
+                    s.get("priority", ""), ac)
+                created.append(key)
+                log.info(f"  Created {key} (cloned from {s.get('key', 'template')}): {s['summary']}")
             except Exception as e:
                 errors.append(f"{s.get('key', s['summary'])}: {e}")
                 log.error(f"  Failed: {s.get('key', s['summary'])}: {e}")
@@ -913,15 +1094,13 @@ class SecurityHeartbeatApp:
         msg = ""
         if created:
             msg += f"✓ Created: {', '.join(created)}\n"
-        if relinked:
-            msg += f"✓ Re-linked: {', '.join(relinked)}\n"
         if errors:
             msg += f"\n✗ Errors:\n" + "\n".join(errors)
         messagebox.showinfo("Results", msg)
-        self._set_status(f"Added {len(created)} created, {len(relinked)} re-linked to {target_epic['key']}")
+        self._set_status(f"Cloned {len(created)} stories to {target_epic['key']}")
 
         # Refresh cache and reload
-        if created or relinked:
+        if created:
             try:
                 self._epic_stories_cache[target_epic["key"]] = jira_client.get_epic_stories(target_epic["key"])
             except Exception:
@@ -996,6 +1175,7 @@ class SecurityHeartbeatApp:
         title_entry.pack(fill="x", padx=10, pady=(0, 5))
         title_entry.insert(0, title)
         title_entry.config(state=state)
+        ToolTip(title_entry, H["us_title"])
 
         # Description
         desc_hdr = tk.Frame(frame, bg=BG_CARD)
@@ -1015,6 +1195,7 @@ class SecurityHeartbeatApp:
                                               highlightthickness=1)
         desc_text.pack(fill="both", expand=True, padx=10, pady=(0, 5))
         desc_text.insert("1.0", description.replace("\r", ""))
+        ToolTip(desc_text, H["us_desc"])
         # Preview button (always visible)
         btn_preview_desc = tk.Button(desc_hdr, text="👁", font=("Segoe UI", 9),
                                      bg="#5c6bc0", fg="white", bd=0, padx=4, pady=0,
@@ -1049,6 +1230,7 @@ class SecurityHeartbeatApp:
                                             bd=0, wrap="word", highlightbackground=BORDER_COLOR,
                                             highlightthickness=1)
         ac_text.pack(fill="x", padx=10, pady=(0, 5))
+        ToolTip(ac_text, H["us_ac"])
         # Preview button for AC (always visible)
         btn_preview_ac = tk.Button(ac_hdr, text="👁", font=("Segoe UI", 9),
                                    bg="#5c6bc0", fg="white", bd=0, padx=4, pady=0,
@@ -1081,6 +1263,7 @@ class SecurityHeartbeatApp:
         sprint_combo = ttk.Combobox(sprint_frame, font=("Segoe UI", 9), width=30,
                                     values=sprint_values, state="readonly" if readonly else "normal")
         sprint_combo.pack(side="left", padx=(5, 0))
+        ToolTip(sprint_combo, H["us_sprint"])
         if sprint:
             sprint_combo.set(sprint)
         elif not existing:
@@ -1133,6 +1316,7 @@ class SecurityHeartbeatApp:
         labels_entry.insert(0, default_labels)
         if readonly:
             labels_entry.config(state="disabled")
+        ToolTip(labels_entry, H["us_labels"])
 
         # Story Points (on same row as labels)
         lbl_sp = tk.Label(labels_frame, text="SP:", font=("Segoe UI", 9, "bold"),
@@ -1147,6 +1331,7 @@ class SecurityHeartbeatApp:
         sp_entry.insert(0, story_points)
         if readonly:
             sp_entry.config(state="disabled")
+        ToolTip(sp_entry, H.get("us_story_points", "Story Points"))
 
         # Assignee
         assign_frame = tk.Frame(frame, bg=BG_CARD)
@@ -1162,6 +1347,7 @@ class SecurityHeartbeatApp:
         assignee_entry.insert(0, assignee_key or assignee)
         if readonly:
             assignee_entry.config(state="disabled")
+        ToolTip(assignee_entry, H["us_assignee"])
 
         # Components
         lbl_comp = tk.Label(assign_frame, text="Components:", font=("Segoe UI", 9, "bold"),
@@ -1175,6 +1361,7 @@ class SecurityHeartbeatApp:
         components_entry.insert(0, ",".join(components or []))
         if readonly:
             components_entry.config(state="disabled")
+        ToolTip(components_entry, H["us_components"])
 
         # Priority
         lbl_prio = tk.Label(assign_frame, text="Priority:", font=("Segoe UI", 9, "bold"),
@@ -1188,6 +1375,7 @@ class SecurityHeartbeatApp:
         priority_entry.insert(0, priority)
         if readonly:
             priority_entry.config(state="disabled")
+        ToolTip(priority_entry, H["us_priority"])
 
         # Buttons (only if not readonly)
         btn_frame = tk.Frame(frame, bg=BG_CARD)
@@ -1709,12 +1897,15 @@ class SecurityHeartbeatApp:
             comp_str = w["components"].get().strip() if "components" in w else ""
             components = [c.strip() for c in comp_str.split(",") if c.strip()]
             priority = w["priority"].get().strip() if "priority" in w else ""
+            story_points = w["story_points"].get().strip() if "story_points" in w else ""
+            key = w.get("key", "")
             if title:
                 stories.append({"title": title, "description": desc,
                                 "acceptance_criteria": ac,
                                 "sprint": sprint, "labels": labels,
                                 "assignee_key": assignee_key,
-                                "components": components, "priority": priority})
+                                "components": components, "priority": priority,
+                                "story_points": story_points, "key": key})
         return stories
 
     def _validate_stories(self, stories: list[dict]) -> list[str]:
@@ -2080,8 +2271,10 @@ class SecurityHeartbeatApp:
         created = []
         updated = []
         errors = []
+        tag_gen = self.tag_generated_var.get()
         log.info(f"Creating/Updating stories for epic {epic_key} "
-                 f"({new_count} new, {mod_count} modified, {unch_count} unchanged)")
+                 f"({new_count} new, {mod_count} modified, {unch_count} unchanged, "
+                 f"tag_generated={tag_gen})")
         import jira_client
         for s in classified:
             st = s["_status"]
@@ -2093,7 +2286,8 @@ class SecurityHeartbeatApp:
                         epic_key, s["title"], s["description"],
                         s.get("sprint"), s.get("labels"),
                         s.get("assignee_key"), s.get("components"),
-                        s.get("priority"), s.get("acceptance_criteria", ""))
+                        s.get("priority"), s.get("acceptance_criteria", ""),
+                        tag_generated=tag_gen)
                     created.append(key)
                     log.info(f"  Created {key}: {s['title']}")
                 elif st == "modified":
@@ -2134,23 +2328,78 @@ class SecurityHeartbeatApp:
         self._set_status("State saved ✓")
 
     def _restore_state(self):
+        """Restore full editing context from the previous session.
+
+        Restores: epic selection, all story tabs with every field
+        (title, description, AC, sprint, labels, assignee, components,
+        priority, story_points, Jira key).
+        If Jira is connected and stories are already loaded from the epic,
+        the user is asked whether to restore saved edits or keep fresh data.
+        """
         state = load_state()
         if not state:
             return
+        log.debug(f"Restoring state: epic_key={state.get('epic_key')}, "
+                  f"stories={len(state.get('stories', []))}")
+
         # Restore epic selection (override auto-select)
         epic_idx = state.get("epic_idx", -1)
         if epic_idx >= 0 and epic_idx < len(self.epics):
             self.epic_combo.selection_clear(0, "end")
             self.epic_combo.selection_set(epic_idx)
             self._on_epic_selected()
-        elif not self.epics:
-            # No Jira connection — restore saved stories
-            stories = state.get("stories", [])
-            if stories:
-                self._clear_tabs()
-                for s in stories:
-                    self._add_tab(s.get("title", ""), s.get("description", ""),
-                                  sprint=s.get("sprint", ""))
+
+        # Restore stories in editing
+        saved_stories = state.get("stories", [])
+        if not saved_stories:
+            return
+
+        # Check if we should restore saved edits over fresh data
+        if JIRA_AVAILABLE and self.tab_widgets:
+            # Stories were loaded from Jira — ask user
+            n_saved = len(saved_stories)
+            msg = (
+                f"Found {n_saved} unsaved story edits from the previous session.\n\n"
+                f"Restore them? (replaces the current tabs loaded from Jira)"
+            )
+            if LANG == "it":
+                msg = (
+                    f"Trovate {n_saved} storie con modifiche non salvate dalla sessione precedente.\n\n"
+                    f"Ripristinare? (sostituisce i tab correnti caricati da Jira)"
+                )
+            title = "Restore Session" if LANG == "en" else "Ripristino Sessione"
+            try:
+                if not self.root.winfo_exists():
+                    return
+                if not messagebox.askyesno(title, msg, parent=self.root):
+                    log.info("User declined session restore — keeping fresh Jira data")
+                    return
+            except Exception as e:
+                log.warning(f"Session restore dialog interrupted: {e}")
+                return
+
+        # Restore all story tabs with full context
+        log.info(f"Restoring {len(saved_stories)} stories from previous session")
+        self._clear_tabs()
+        for s in saved_stories:
+            self._add_tab(
+                title=s.get("title", "New Story"),
+                description=s.get("description", ""),
+                sprint=s.get("sprint", ""),
+                key=s.get("key", ""),
+                existing=bool(s.get("key")),
+                readonly=False,
+                acceptance_criteria=s.get("acceptance_criteria", ""),
+                labels=s.get("labels"),
+                assignee_key=s.get("assignee_key", ""),
+                components=s.get("components"),
+                priority=s.get("priority", ""),
+                story_points=s.get("story_points", ""),
+            )
+        # Select first tab
+        if self.tab_widgets:
+            self.notebook.select(0)
+        self._set_status(f"✓ Session restored ({len(saved_stories)} stories)")
 
     def _show_history(self):
         """Show application version history / changelog."""
@@ -2161,6 +2410,9 @@ class SecurityHeartbeatApp:
         text.pack(fill="both", expand=True, padx=10, pady=10)
 
         changelog = (
+            "═══ v1.4.0 (2026-08-25) ═══\n"
+            "  • Tag-as-generated: optional label + description footer on created stories\n"
+            "\n"
             "═══ v1.3.0 (2026-07-27) ═══\n"
             "  • Create/Update confirmation popup with status icons (New/Modified/Unchanged)\n"
             "  • Double confirmation step before writing to Jira\n"
@@ -2210,20 +2462,81 @@ class SecurityHeartbeatApp:
             text=f"  Mode: {'JIRA' if JIRA_AVAILABLE else 'DEMO'}  |  Ctrl+S: Save  |  Ctrl+Q: Quit"))
 
     def _on_close(self):
-        self._save()
-        # Save window geometries to app_config.json
-        save_app_config({
-            "window_geometry": self.root.geometry(),
-            "popup_geometries": POPUP_GEOMETRIES,
-        })
+        """Handle application close — robust against stuck callbacks on Linux."""
+        # Cancel any pending after() callbacks to avoid TclError on destroy
+        if self._blink_id:
+            try:
+                self.root.after_cancel(self._blink_id)
+            except Exception:
+                pass
+            self._blink_id = None
+
+        try:
+            if not self.root.winfo_exists():
+                sys.exit(0)
+            self._save()
+            # Save window geometries to app_config.json
+            save_app_config({
+                "window_geometry": self.root.geometry(),
+                "popup_geometries": POPUP_GEOMETRIES,
+            })
+        except Exception as e:
+            log.warning(f"Error during close cleanup: {e}")
+
         log.info("Application closed")
-        self.root.destroy()
+        try:
+            self.root.quit()  # exit mainloop first
+        except Exception:
+            pass
+        try:
+            self.root.destroy()
+        except Exception:
+            pass
+        sys.exit(0)
 
     def run(self):
         self.root.mainloop()
 
 
 def main():
+    # --- Pre-flight: check Jira reachability before building the full GUI ---
+    # Uses a quick TCP probe (5s timeout) to avoid the minutes-long hang
+    # caused by python-jira's default unlimited timeout + retries.
+    if JIRA_URL:
+        if not _check_jira_reachable(JIRA_URL, timeout=5.0):
+            # Show a warning popup (lightweight Tk root, destroyed after choice)
+            _pre_root = tk.Tk()
+            _pre_root.withdraw()  # hide the empty root window
+            msg = (
+                f"⚠️  Cannot reach Jira server:\n"
+                f"{JIRA_URL}\n\n"
+                f"Possible causes:\n"
+                f"  • VPN not connected\n"
+                f"  • Server down or unreachable\n"
+                f"  • Network issues\n\n"
+                f"Continue in DEMO mode (offline)?\n"
+                f"You can connect later via the credentials panel."
+            )
+            if LANG == "it":
+                msg = (
+                    f"⚠️  Impossibile raggiungere il server Jira:\n"
+                    f"{JIRA_URL}\n\n"
+                    f"Possibili cause:\n"
+                    f"  • VPN non connessa\n"
+                    f"  • Server non raggiungibile\n"
+                    f"  • Problemi di rete\n\n"
+                    f"Continuare in modalità DEMO (offline)?\n"
+                    f"Potrai connetterti in seguito dal pannello credenziali."
+                )
+            title = "Jira Connection" if LANG == "en" else "Connessione Jira"
+            proceed = messagebox.askokcancel(title, msg, icon="warning",
+                                             parent=_pre_root)
+            _pre_root.destroy()
+            if not proceed:
+                log.info("User chose to exit (Jira unreachable)")
+                sys.exit(0)
+            log.info("User chose DEMO mode (Jira unreachable)")
+
     app = SecurityHeartbeatApp()
     app.run()
 
