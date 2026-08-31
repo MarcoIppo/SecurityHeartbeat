@@ -4,6 +4,65 @@
 
 ---
 
+## #18 — Indicatore di modifica US sui tab (pallino rosso)
+
+| Campo | Dettaglio |
+|-------|-----------|
+| **Data** | 2026-08-28 |
+| **Severità** | 🟢 Feature |
+| **Versione** | 1.4.4 |
+| **File coinvolti** | `app.py`, `config.py`, `README.md` |
+| **Test** | Syntax check ✅ |
+
+### Funzionalità
+
+Aggiunto tracciamento delle modifiche locali per ogni tab di User Story. Quando l'utente modifica qualsiasi campo (titolo, descrizione, acceptance criteria, sprint, labels, assignee, components, priority, story points), il tab viene marcato con un indicatore rosso 🔴 nel titolo. Il flag `modified` è persistente tra le sessioni: viene salvato nello state file alla chiusura e ripristinato con il pallino rosso alla riapertura. Il reset avviene *solo* dopo un push su Jira con successo (creazione o update). Se dopo il push l'utente modifica di nuovo, il pallino si riattiva.
+
+---
+
+## #17 — Modifiche locali perse al riavvio dell'app (dialog invertito)
+
+| Campo | Dettaglio |
+|-------|-----------|
+| **Data** | 2026-08-28 |
+| **Severità** | 🔴 Data Loss Bug |
+| **Versione** | 1.4.2 |
+| **File coinvolti** | `app.py` |
+| **Test** | Syntax check ✅ |
+
+### Criticità
+
+Alla chiusura dell'app le modifiche locali non pushate su Jira venivano correttamente salvate nello state file. Tuttavia al riavvio, quando Jira era connesso e le stories venivano ricaricate, il dialog di ripristino chiedeva "Vuoi ripristinare le modifiche salvate?" con logica `Yes=ripristina, No=tieni Jira`. L'utente, interpretando la domanda come "Vuoi ricaricare da Jira?", rispondeva **No** aspettandosi di mantenere le proprie modifiche, ma in realtà **No** significava "tieni i dati freschi da Jira", perdendo le modifiche locali.
+
+### Fix
+
+Invertita la semantica del dialog. La domanda ora chiede esplicitamente "Vuoi RICARICARE da Jira? (scartando le modifiche locali)" con spiegazione chiara: Sì = dati freschi Jira, No = mantieni modifiche locali. La logica del codice è stata invertita di conseguenza (`if messagebox.askyesno → return` anziché `if not messagebox.askyesno → return`).
+
+---
+
+## #16 — Preview markup: colori hex e inline formatting nelle tabelle non renderizzati
+
+| Campo | Dettaglio |
+|-------|-----------|
+| **Data** | 2026-08-28 |
+| **Severità** | 🟡 Bug Fix |
+| **Versione** | 1.4.2 |
+| **File coinvolti** | `app.py` |
+| **Test** | Syntax check ✅ |
+
+### Criticità
+
+Il preview della markup Jira (pulsante 👁) presentava due problemi:
+1. I colori specificati con codice hex (`{color:#14892c}text{color}`) non venivano parsati — la regex accettava solo nomi colore (`{color:red}`), ignorando i codici `#rrggbb`.
+2. Il contenuto delle celle delle tabelle veniva renderizzato come testo grezzo senza applicare l'inline markup (bold, italic, colori, link), causando la visualizzazione dei tag `*`, `_`, `{color}` non interpretati e colonne disallineate.
+
+### Fix
+
+1. Estesa la regex del pattern `color` per accettare anche codici hex: `(#[0-9a-fA-F]{3,8}|\w+)`. I colori hex generano dinamicamente un tag tkinter con `tag_configure(foreground=hex_val)`.
+2. Riscritta `_flush_table()`: ogni cella viene ora renderizzata tramite `_render_inline_markup()` con calcolo dell'allineamento basato sulla lunghezza visibile (strippando i tag markup) anziché sulla lunghezza grezza della stringa.
+
+---
+
 ## #15 — GUI freezata durante inizializzazione (cursore busy)
 
 | Campo | Dettaglio |

@@ -63,7 +63,7 @@ MAX_EPICS = _APP_CFG.get("max_epics", 5)
 TEAM_NAME = _APP_CFG.get("team_name", "Hydra")
 BOARD_ID = _APP_CFG.get("board_id", 38770)
 
-VERSION = "1.4.2"
+VERSION = "1.4.4"
 APP_TITLE = "Security Heartbeat US Generator"
 APP_DESC = "Generate and manage Jira User Stories from Security Heartbeat epics"
 

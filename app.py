@@ -1402,7 +1402,38 @@ class SecurityHeartbeatApp:
         # Tab title: Jira key or "New"
         tab_label = key if key else "🆕 New"
         self.notebook.add(frame, text=tab_label)
-        self.tab_widgets.append({"frame": frame, "title": title_entry,
+
+        # --- Modified tracking ---
+        tab_base_label = tab_label  # store original label without indicator
+
+        # Use a mutable container so the closure can reference the widget dict
+        _widget_ref = [None]  # will be set after append
+
+        def _mark_modified(*_args):
+            """Mark this tab as modified and update the tab title with a dot indicator."""
+            w = _widget_ref[0]
+            if w is None or w.get("modified"):
+                return
+            # Filter out non-content keys (navigation, modifier keys, focus events)
+            if _args and hasattr(_args[0], 'keysym'):
+                ignore_keys = {'Tab', 'ISO_Left_Tab', 'Shift_L', 'Shift_R',
+                               'Control_L', 'Control_R', 'Alt_L', 'Alt_R',
+                               'Caps_Lock', 'Escape', 'F1', 'F2', 'F3', 'F4',
+                               'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12',
+                               'Up', 'Down', 'Left', 'Right', 'Home', 'End',
+                               'Prior', 'Next', 'Insert', 'Num_Lock', 'Scroll_Lock',
+                               'Super_L', 'Super_R', 'Menu', 'Pause',
+                               'FocusIn', 'FocusOut', '??'}
+                if _args[0].keysym in ignore_keys:
+                    return
+            w["modified"] = True
+            try:
+                self.notebook.tab(frame, text=f"🔴 {tab_base_label}")
+            except Exception:
+                pass
+            log.debug(f"Tab marked as modified: {tab_base_label}")
+
+        widget_dict = {"frame": frame, "title": title_entry,
                                   "desc": desc_text, "sprint": sprint_combo,
                                   "labels": labels_entry, "ac": ac_text,
                                   "assignee": assignee_entry,
@@ -1410,8 +1441,25 @@ class SecurityHeartbeatApp:
                                   "priority": priority_entry,
                                   "story_points": sp_entry,
                                   "existing": existing, "readonly": readonly,
-                                  "key": key})
+                                  "key": key, "modified": False,
+                                  "tab_base_label": tab_base_label}
+        _widget_ref[0] = widget_dict
+        self.tab_widgets.append(widget_dict)
         self.story_tabs.append({"title": title, "description": description, "sprint": sprint})
+
+        # Bind modification tracking on all editable widgets (skip if readonly)
+        if not readonly:
+            # Entry widgets: detect user keystrokes
+            for entry_w in (title_entry, labels_entry, assignee_entry,
+                            components_entry, priority_entry, sp_entry):
+                entry_w.bind("<KeyRelease>", _mark_modified, add="+")
+            # Text widgets (ScrolledText): detect user keystrokes
+            # Using <KeyRelease> instead of <<Modified>> to avoid false positives
+            # from initial .insert() calls during tab creation
+            for text_w in (desc_text, ac_text):
+                text_w.bind("<KeyRelease>", _mark_modified, add="+")
+            # Combobox: detect selection change
+            sprint_combo.bind("<<ComboboxSelected>>", _mark_modified, add="+")
 
         # Select the new tab
         self.notebook.select(frame)
@@ -1564,24 +1612,50 @@ class SecurityHeartbeatApp:
         table_rows = []  # accumulate table rows for column alignment
 
         def _flush_table():
-            """Render accumulated table rows with aligned columns."""
+            """Render accumulated table rows with aligned columns and inline markup."""
             nonlocal table_rows
             if not table_rows:
                 return
-            # Calculate max width per column
+
+            import re as _re
+
+            def _strip_markup_len(text):
+                """Return visible length of text after stripping Jira markup tags."""
+                s = _re.sub(r'\{color:[^}]*\}', '', text)
+                s = _re.sub(r'\{color\}', '', s)
+                s = s.replace('{{', '').replace('}}', '')
+                # Bold: *text* → text, Italic: _text_ → text
+                s = _re.sub(r'\*([^*\n]+?)\*', r'\1', s)
+                s = _re.sub(r'(?<!\w)_([^_\n]+?)_(?!\w)', r'\1', s)
+                # Links: [text|url] → text
+                s = _re.sub(r'\[([^|\]\n]+)\|[^\]\n]+\]', r'\1 ↗', s)
+                s = _re.sub(r'\[(https?://[^\]\n]+)\]', r'\1 ↗', s)
+                return len(s)
+
+            # Calculate max visible width per column
             max_cols = max(len(row["cells"]) for row in table_rows)
             col_widths = [0] * max_cols
             for row in table_rows:
                 for i, cell in enumerate(row["cells"]):
-                    col_widths[i] = max(col_widths[i], len(cell))
-            # Render each row with padding
+                    col_widths[i] = max(col_widths[i], _strip_markup_len(cell))
+
+            # Render each row with padding and inline markup
             for row in table_rows:
-                tag = row["tag"]
-                padded = []
-                for i, cell in enumerate(row["cells"]):
-                    padded.append(cell.ljust(col_widths[i] if i < len(col_widths) else 0))
+                base_tag = row["tag"]
                 text_widget.insert("end", "  ", "table_border")
-                text_widget.insert("end", " │ ".join(padded), tag)
+                for i, cell in enumerate(row["cells"]):
+                    if i > 0:
+                        text_widget.insert("end", " │ ", "table_border")
+                    # Pad based on visible length difference
+                    visible_len = _strip_markup_len(cell)
+                    target_width = col_widths[i] if i < len(col_widths) else visible_len
+                    padding = " " * max(0, target_width - visible_len)
+                    # Apply base background tag, then render inline markup on top
+                    start_mark = text_widget.index("end-1c")
+                    self._render_inline_markup(text_widget, cell + padding)
+                    end_mark = text_widget.index("end-1c")
+                    # Apply base table tag as background for the cell range
+                    text_widget.tag_add(base_tag, start_mark, end_mark)
                 text_widget.insert("end", "\n")
             table_rows = []
 
@@ -1787,7 +1861,7 @@ class SecurityHeartbeatApp:
 
         # Pattern priority order matters — longer/more-specific patterns first
         patterns = [
-            (r'\{color:(\w+)\}(.*?)\{color\}', 'color'),
+            (r'\{color:(#[0-9a-fA-F]{3,8}|\w+)\}(.*?)\{color\}', 'color'),
             (r'\{\{(.*?)\}\}', 'monospace'),
             (r'\*_(.*?)_\*', 'bolditalic'),
             (r'_\*(.*?)\*_', 'bolditalic'),
@@ -1809,12 +1883,21 @@ class SecurityHeartbeatApp:
         for pattern, tag_type in patterns:
             for m in re.finditer(pattern, line):
                 if tag_type == 'color':
-                    color_name = m.group(1).lower()
+                    color_val = m.group(1)
+                    color_lower = color_val.lower()
                     known_colors = ("red", "green", "blue", "orange", "purple",
                                     "yellow", "cyan", "gray", "grey", "navy",
                                     "teal", "maroon", "white", "black")
-                    if color_name in known_colors:
-                        tag = f"color_{color_name}"
+                    if color_lower in known_colors:
+                        tag = f"color_{color_lower}"
+                    elif color_val.startswith("#"):
+                        # Dynamic tag for hex color codes
+                        hex_tag = f"color_hex_{color_val[1:]}"
+                        try:
+                            text_widget.tag_configure(hex_tag, foreground=color_val)
+                        except Exception:
+                            hex_tag = "bold"  # fallback
+                        tag = hex_tag
                     else:
                         tag = "bold"
                     segments.append((m.start(), m.end(), tag, m.group(2)))
@@ -1905,7 +1988,8 @@ class SecurityHeartbeatApp:
                                 "sprint": sprint, "labels": labels,
                                 "assignee_key": assignee_key,
                                 "components": components, "priority": priority,
-                                "story_points": story_points, "key": key})
+                                "story_points": story_points, "key": key,
+                                "modified": w.get("modified", False)})
         return stories
 
     def _validate_stories(self, stories: list[dict]) -> list[str]:
@@ -2316,6 +2400,19 @@ class SecurityHeartbeatApp:
         messagebox.showinfo("Results", msg)
         self._set_status(f"Created {len(created)}, Updated {len(updated)} stories")
 
+        # Reset modified indicators on tabs that were successfully created/updated
+        for w in self.tab_widgets:
+            if w is None:
+                continue
+            k = w.get("key", "")
+            if k in created or k in updated or (not k and created):
+                w["modified"] = False
+                base = w.get("tab_base_label", k or "🆕 New")
+                try:
+                    self.notebook.tab(w["frame"], text=base)
+                except Exception:
+                    pass
+
     def _save(self):
         sel = self.epic_combo.curselection()
         state = {
@@ -2356,23 +2453,32 @@ class SecurityHeartbeatApp:
 
         # Check if we should restore saved edits over fresh data
         if JIRA_AVAILABLE and self.tab_widgets:
-            # Stories were loaded from Jira — ask user
+            # Stories were loaded from Jira — ask user what to keep
             n_saved = len(saved_stories)
+            n_jira = len(self.tab_widgets)
             msg = (
-                f"Found {n_saved} unsaved story edits from the previous session.\n\n"
-                f"Restore them? (replaces the current tabs loaded from Jira)"
+                f"Stories have been loaded from Jira ({n_jira} stories).\n"
+                f"However, {n_saved} stories with local edits were found "
+                f"from the previous session.\n\n"
+                f"Do you want to RELOAD from Jira (discard local edits)?\n\n"
+                f"  • Yes = reload fresh data from Jira\n"
+                f"  • No  = keep your local edits from last session"
             )
             if LANG == "it":
                 msg = (
-                    f"Trovate {n_saved} storie con modifiche non salvate dalla sessione precedente.\n\n"
-                    f"Ripristinare? (sostituisce i tab correnti caricati da Jira)"
+                    f"Le stories sono state caricate da Jira ({n_jira} stories).\n"
+                    f"Tuttavia, sono state trovate {n_saved} stories con modifiche locali "
+                    f"dalla sessione precedente.\n\n"
+                    f"Vuoi RICARICARE da Jira (scartando le modifiche locali)?\n\n"
+                    f"  • Sì = ricarica i dati freschi da Jira\n"
+                    f"  • No = mantieni le modifiche locali della sessione precedente"
                 )
-            title = "Restore Session" if LANG == "en" else "Ripristino Sessione"
+            title = "Reload from Jira?" if LANG == "en" else "Ricaricare da Jira?"
             try:
                 if not self.root.winfo_exists():
                     return
-                if not messagebox.askyesno(title, msg, parent=self.root):
-                    log.info("User declined session restore — keeping fresh Jira data")
+                if messagebox.askyesno(title, msg, parent=self.root):
+                    log.info("User chose to keep fresh Jira data — discarding local edits")
                     return
             except Exception as e:
                 log.warning(f"Session restore dialog interrupted: {e}")
@@ -2396,6 +2502,16 @@ class SecurityHeartbeatApp:
                 priority=s.get("priority", ""),
                 story_points=s.get("story_points", ""),
             )
+            # Restore modified flag from previous session
+            if s.get("modified", False) and self.tab_widgets:
+                w = self.tab_widgets[-1]
+                if w is not None:
+                    w["modified"] = True
+                    base = w.get("tab_base_label", w.get("key") or "🆕 New")
+                    try:
+                        self.notebook.tab(w["frame"], text=f"🔴 {base}")
+                    except Exception:
+                        pass
         # Select first tab
         if self.tab_widgets:
             self.notebook.select(0)

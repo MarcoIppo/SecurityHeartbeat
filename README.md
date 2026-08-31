@@ -1,6 +1,6 @@
 # Security Heartbeat US Generator
 
-**Version 1.4.2**
+**Version 1.4.4**
 
 A Python/tkinter desktop application to automate the creation and management of Jira User Stories for the Security Heartbeat recurrent test activities in ENM/cENM releases.
 
